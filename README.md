@@ -9,8 +9,9 @@ Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
                   extract      transform       load
 ```
 
-Python runs locally. PostgreSQL runs in Docker with a persistent named volume.
-Airflow scheduling and additional cities are future milestones.
+The ETL modules can run locally or inside the Airflow image. PostgreSQL and the
+Airflow infrastructure run in Docker. The weather DAG and scheduling are the next
+milestone; no DAG has been added yet.
 
 ## Requirements
 
@@ -43,16 +44,120 @@ database. If `.env` already exists, keep it. The initial setup in this project
 already generated a local password. `.env` is ignored by Git; `.env.example`
 contains placeholders. Environment variables override the file's values.
 
+### Configure Airflow environment variables
+
+The current local `.env` already contains generated Airflow settings. On a fresh
+checkout, fill in the Airflow settings from `.env.example`:
+
+- `AIRFLOW_DB_PASSWORD`: a separate metadata database password. Use letters and
+  numbers or generate it with the JWT command below, since it is part of a URL.
+- `AIRFLOW_FERNET_KEY`: generate a valid Fernet key with:
+
+  ```powershell
+  python -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+  ```
+
+- `AIRFLOW_JWT_SECRET`: generate a random signing secret with:
+
+  ```powershell
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+
+Keep these values stable across restarts. They are shared between Airflow components.
+`AIRFLOW_WEB_PORT` defaults to 8080. Keep actual secrets in `.env`, not in Git.
+
+Compose validates all required variables before selecting services. Complete these
+settings before any Compose command, including weather-db-only startup. If you
+already have a .env, add the new keys from .env.example and preserve your existing
+weather database credentials.
+
 Start PostgreSQL and wait for it to be ready:
 
 ```powershell
-docker compose up -d --wait --wait-timeout 60
+docker compose up -d --wait --wait-timeout 60 weather-db
 docker compose ps
 ```
 
 The local connection defaults are host `localhost`, port `5433`, database `weather`,
 and user `weather`. Docker maps your local port 5433 to the container's port 5432.
 The service binds to localhost. You can change the host port in `.env` if needed.
+
+## Airflow setup (local development)
+
+This setup pins Airflow 3.3.2 with Python 3.12 and uses LocalExecutor. The official
+[Docker guide](https://airflow.apache.org/docs/apache-airflow/3.3.2/howto/docker-compose/index.html)
+provides the component layout; this project omits Celery and Redis because the
+scheduler executes tasks locally. This is a learning environment bound to localhost.
+
+| Service | Purpose |
+| --- | --- |
+| `weather-db` | Stores weather records; reachable locally on port 5433 |
+| `airflow-db` | Stores Airflow's internal metadata; no published host port |
+| `airflow-init` | Runs database migrations, then exits successfully |
+| `airflow-api-server` | Serves the UI and APIs at localhost:8080 |
+| `airflow-scheduler` | Schedules tasks and runs them using LocalExecutor |
+| `airflow-dag-processor` | Parses the Python files in `dags/` |
+
+### Start Airflow
+
+After completing the environment-variable setup above, build and start Airflow.
+
+Build the shared image and start the services:
+
+```powershell
+docker compose build airflow-api-server
+docker compose up -d --wait --wait-timeout 120 airflow-api-server airflow-scheduler airflow-dag-processor weather-db
+docker compose ps -a
+```
+
+The dependency chain starts `airflow-db`, waits for readiness, runs `airflow-init`,
+then starts the API server, scheduler, and DAG processor. `airflow-init` showing
+`Exited (0)` is expected. First startup can take a few minutes. Docker should have
+at least 4 GB of memory available, preferably 8 GB.
+
+Open [http://localhost:8080](http://localhost:8080). The username is `admin`.
+Airflow's development SimpleAuthManager generates its password on first startup.
+Read it locally with:
+
+```powershell
+docker compose exec airflow-api-server cat /opt/airflow/auth/passwords.json
+```
+
+The JSON contains the password for `admin`; it persists in the `airflow_auth`
+named volume. Do not commit or publish that output. This authentication manager
+is intended for development and testing.
+
+### Shared files and dependencies
+
+- `dags/` is mounted read-only at `/opt/airflow/dags` (empty at this milestone).
+- `weather_etl/` and `sql/` are mounted read-only under `/opt/airflow/project`.
+- `data/` is shared read/write at `/opt/airflow/project/data`.
+- `PYTHONPATH` makes the pipeline package importable inside each Airflow service.
+- The Dockerfile installs `requirements.txt` at build time while keeping Airflow pinned.
+- Airflow logs, generated UI credentials, and metadata use separate named volumes.
+
+Inside containers, the weather database host is `weather-db` and port is `5432`.
+The Compose environment supplies these values; your local `.env` keeps `localhost`
+and port `5433` for Python commands run directly on Windows.
+
+You can run the existing extractor in the same environment future DAG tasks will use:
+
+```powershell
+docker compose exec airflow-scheduler python -m weather_etl.extract
+```
+
+Its output appears in your local `data/raw/`. This is a CLI check, not a scheduled
+Airflow run. A DAG connecting extract, transform, and load comes in the next commit.
+
+Check the services and logs:
+
+```powershell
+docker compose ps -a
+docker compose logs --tail 50 airflow-scheduler airflow-dag-processor
+```
+
+The `/api/v2/monitor/health` endpoint reports component status. An HTTP 200 alone
+does not mean all components are healthy; inspect the returned status fields.
 
 ## 1. Extract
 
@@ -214,6 +319,9 @@ weather-etl/
 |   |-- transform.py
 |   `-- load.py
 |-- tests/               # Offline and database tests
+|-- dags/                # Future Airflow DAGs
+|-- docker/
+|   -- airflow/Dockerfile
 |-- sql/
 |   `-- schema.sql
 |-- data/                # Generated files, ignored by Git
@@ -235,7 +343,8 @@ package folder. `tests/__init__.py` enables recursive unittest discovery.
 - `weather_etl/transform.py`: validated rows and CSV output.
 - `weather_etl/load.py`: transactional, repeatable database loading.
 - `sql/schema.sql`: table types, primary key, and constraints.
-- `compose.yaml`: PostgreSQL container, health check, and persistent storage.
+- compose.yaml: weather database and Airflow services, health checks, and persistent storage.
+- docker/airflow/Dockerfile: pinned Airflow image with pipeline dependencies.
 - `.env.example`: configuration template; actual `.env` is local.
 - `tests/test_transform_weather.py`, `tests/test_load_weather.py`: transformation and database checks.
 
@@ -244,8 +353,8 @@ are stored in the repository.
 
 ## Next milestones
 
-1. Date-based processing and recovery of missed data.
-2. Airflow DAGs, schedules, retries, and monitoring.
+1. Add the weather DAG and verify a manual run.
+2. Add daily scheduling, retries, and date-based processing.
 3. Cebu and Davao, daily summaries, and project architecture documentation.
 
 ## Sources

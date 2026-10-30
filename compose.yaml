@@ -1,4 +1,42 @@
 name: weather-etl
+
+x-airflow-common: &airflow-common
+  image: weather-etl-airflow:3.3.2
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+  environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD in .env}@airflow-db:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?Set AIRFLOW_FERNET_KEY in .env}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?Set AIRFLOW_JWT_SECRET in .env}
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+    AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_WEB_PORT:-8080}
+    PYTHONPATH: /opt/airflow/project
+    WEATHER_DB_HOST: weather-db
+    WEATHER_DB_PORT: "5432"
+    WEATHER_DB_NAME: ${WEATHER_DB_NAME:-weather}
+    WEATHER_DB_USER: ${WEATHER_DB_USER:-weather}
+    WEATHER_DB_PASSWORD: ${WEATHER_DB_PASSWORD:?Set WEATHER_DB_PASSWORD in .env}
+  volumes:
+    - ./dags:/opt/airflow/dags:ro
+    - ./weather_etl:/opt/airflow/project/weather_etl:ro
+    - ./sql:/opt/airflow/project/sql:ro
+    - ./data:/opt/airflow/project/data
+    - airflow_logs:/opt/airflow/logs
+    - airflow_auth:/opt/airflow/auth
+  working_dir: /opt/airflow/project
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+    airflow-init:
+      condition: service_completed_successfully
+
 services:
   weather-db:
     image: postgres:17.11-bookworm
@@ -16,5 +54,63 @@ services:
       timeout: 5s
       retries: 12
       start_period: 5s
+
+  airflow-db:
+    image: postgres:17.11-bookworm
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD in .env}
+    volumes:
+      - airflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  airflow-init:
+    <<: *airflow-common
+    command: ["airflow", "db", "migrate"]
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: ["airflow", "api-server"]
+    ports:
+      - "127.0.0.1:${AIRFLOW_WEB_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["airflow", "scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local"]
+      interval: 15s
+      timeout: 15s
+      retries: 8
+      start_period: 30s
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["airflow", "dag-processor"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --local"]
+      interval: 15s
+      timeout: 15s
+      retries: 8
+      start_period: 30s
+
 volumes:
   weather_pgdata:
+  airflow_pgdata:
+  airflow_logs:
+  airflow_auth:

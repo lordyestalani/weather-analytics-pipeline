@@ -1,0 +1,6 @@
+# Only dependency/build files are needed in the image build context.
+**
+!requirements.txt
+!docker/
+!docker/airflow/
+!docker/airflow/Dockerfile
