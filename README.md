@@ -1,4 +1,4 @@
-# Philippine Weather ETL Pipeline
+# Philippine Weather Analytics Pipeline
 
 A learning project for Python, SQL, and data engineering, progressing toward a daily Apache Airflow DAG. The intended analytical output is a comparison of weather across Manila, Cebu, and Davao.
 
