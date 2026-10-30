@@ -6,8 +6,10 @@ from pathlib import Path
 
 import requests
 
+PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
 
-def main():
+
+def extract_weather() -> Path:
     # Query parameters describe the data we want from the API.
     parameters = {
         "latitude": 14.5995,
@@ -28,7 +30,7 @@ def main():
     payload = json.loads(raw_response)
     fetched_at = datetime.now(timezone.utc)
     snapshot_name = fetched_at.strftime("%Y%m%dT%H%M%S_%fZ")
-    output_directory = Path(__file__).resolve().parents[1] / "data" / "raw"
+    output_directory = PROJECT_DIRECTORY / "data" / "raw"
     output_directory.mkdir(parents=True, exist_ok=True)
     output_path = output_directory / f"manila_forecast_{snapshot_name}.json"
 
@@ -52,6 +54,11 @@ def main():
     print(f"Saved {len(payload['hourly']['time'])} hourly forecast records.")
     print(f"Raw data: {output_path}")
     print(f"Metadata: {metadata_path}")
+    return output_path
+
+
+def main():
+    extract_weather()
 
 
 if __name__ == "__main__":

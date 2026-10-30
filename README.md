@@ -9,9 +9,9 @@ Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
                   extract      transform       load
 ```
 
-The ETL modules can run locally or inside the Airflow image. PostgreSQL and the
-Airflow infrastructure run in Docker. The weather DAG and scheduling are the next
-milestone; no DAG has been added yet.
+Airflow orchestrates a manual extract -> transform -> load DAG in Docker. The
+ETL modules can also run directly from your terminal. Automatic scheduling and
+additional cities are future milestones.
 
 ## Requirements
 
@@ -133,7 +133,7 @@ local development and testing; its password file remains in the
 
 ### Shared files and dependencies
 
-- `dags/` is mounted read-only at `/opt/airflow/dags` (empty at this milestone).
+- `dags/` is mounted read-only at `/opt/airflow/dags` and contains `weather_etl_dag.py`.
 - `weather_etl/` and `sql/` are mounted read-only under `/opt/airflow/project`.
 - `data/` is shared read/write at `/opt/airflow/project/data`.
 - `PYTHONPATH` makes the pipeline package importable inside each Airflow service.
@@ -144,14 +144,14 @@ Inside containers, the weather database host is `weather-db` and port is `5432`.
 The Compose environment supplies these values; your local `.env` keeps `localhost`
 and port `5433` for Python commands run directly on Windows.
 
-You can run the existing extractor in the same environment future DAG tasks will use:
+You can also run the extractor directly in the same environment as the DAG tasks:
 
 ```powershell
 docker compose exec airflow-scheduler python -m weather_etl.extract
 ```
 
-Its output appears in your local `data/raw/`. This is a CLI check, not a scheduled
-Airflow run. A DAG connecting extract, transform, and load comes in the next commit.
+Its output appears in your local `data/raw/`. This CLI command executes only
+extraction; use the DAG below to orchestrate all three steps.
 
 Check the services and logs:
 
@@ -162,6 +162,42 @@ docker compose logs --tail 50 airflow-scheduler airflow-dag-processor
 
 The `/api/v2/monitor/health` endpoint reports component status. An HTTP 200 alone
 does not mean all components are healthy; inspect the returned status fields.
+
+## Run the weather DAG manually
+
+Open [Airflow](http://localhost:8080), find `weather_etl`, and choose **Trigger Dag**.
+It is enabled on first discovery and has `schedule=None`, so it only runs when you
+trigger it. No daily schedule or automatic task retries are configured yet.
+
+You can also trigger it from PowerShell:
+
+```powershell
+docker compose exec airflow-scheduler airflow dags trigger weather_etl
+```
+
+The graph has three tasks:
+
+```text
+extract -> transform -> load
+```
+
+- `extract` calls `extract_weather()` and returns the saved raw JSON filename.
+- `transform` receives that exact filename, validates its data, and returns a CSV filename.
+- `load` receives that CSV filename and returns the number of newly inserted rows.
+
+The [TaskFlow API](https://airflow.apache.org/docs/apache-airflow/3.3.2/tutorial/taskflow.html)
+creates dependencies from function arguments. It passes the small filename strings
+through XCom; the weather data itself stays in the shared `data/` directory.
+Tasks do not search for the latest file, so other snapshots cannot change a run's input.
+
+The Python modules expose reusable functions while retaining their `python -m`
+commands. SQL transactions and duplicate handling are unchanged. Re-running load
+with the same CSV inserts zero duplicate rows. Triggering a new DAG run fetches a
+new forecast snapshot, which is intentionally stored as a separate version.
+
+Use the run's Graph view to inspect each task's status and logs. Extract and
+transform log their output filenames; load logs its inserted count. If an upstream
+task fails, downstream tasks do not continue with unrelated or stale files.
 
 ## 1. Extract
 
@@ -280,7 +316,7 @@ Exit psql with `\q`.
 
 ## Tests
 
-Run the offline transform tests (database tests are skipped):
+Run the offline file-handoff and transform tests (database and DAG checks are skipped):
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -v
@@ -297,6 +333,19 @@ Remove-Item Env:WEATHER_DB_TESTS
 Database tests create and remove a private temporary schema. They check duplicate
 prevention, forecast history, batch rollback, missing measurements, timestamp offsets,
 and empty input without changing your weather table.
+
+
+The DAG-loading test requires Airflow. Run the complete suite in the existing
+Airflow image while the databases are running:
+
+```powershell
+docker compose run --rm --no-deps -e WEATHER_DB_TESTS=1 -v "${PWD}/tests:/opt/airflow/project/tests:ro" airflow-scheduler python -m unittest discover -v
+```
+
+This temporarily mounts `tests/` read-only and uses the container's database
+settings. The DAG check verifies manual scheduling and the three task dependencies.
+The file-handoff checks use temporary files; the external HTTP response is mocked
+only for the offline extractor test.
 
 ## Stop and restart
 
@@ -323,7 +372,7 @@ weather-etl/
 |   |-- transform.py
 |   `-- load.py
 |-- tests/               # Offline and database tests
-|-- dags/                # Future Airflow DAGs
+|-- dags/                # Airflow DAG definitions
 |-- docker/
 |   -- airflow/Dockerfile
 |-- sql/
@@ -343,22 +392,23 @@ means run the `extract` module inside the `weather_etl` package. Scripts locate
 `.env`, SQL, and output directories relative to the project root, not their own
 package folder. `tests/__init__.py` enables recursive unittest discovery.
 
-- `weather_etl/extract.py`: HTTP extraction and raw snapshots.
-- `weather_etl/transform.py`: validated rows and CSV output.
-- `weather_etl/load.py`: transactional, repeatable database loading.
+- `weather_etl/extract.py`: HTTP extraction, raw snapshots, and `extract_weather()`.
+- `weather_etl/transform.py`: validated rows, CSV output, and `transform_file()`.
+- `weather_etl/load.py`: transactional loading through `load_csv()` and `load_file()`.
 - `sql/schema.sql`: table types, primary key, and constraints.
 - compose.yaml: weather database and Airflow services, health checks, and persistent storage.
 - docker/airflow/Dockerfile: pinned Airflow image with pipeline dependencies.
 - `.env.example`: configuration template; actual `.env` is local.
-- `tests/test_transform_weather.py`, `tests/test_load_weather.py`: transformation and database checks.
+- dags/weather_etl_dag.py: the manual three-task weather workflow.
+- 	ests/: file handoff, transformation, database, and DAG checks.
 
 Generated data and the virtual environment are ignored by Git. No database files
 are stored in the repository.
 
 ## Next milestones
 
-1. Add the weather DAG and verify a manual run.
-2. Add daily scheduling, retries, and date-based processing.
+1. Add daily scheduling and task retries.
+2. Add date-based processing and recovery of missed data.
 3. Cebu and Davao, daily summaries, and project architecture documentation.
 
 ## Sources

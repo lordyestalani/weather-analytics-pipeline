@@ -88,15 +88,21 @@ def load_csv(csv_path, connection):
     return inserted
 
 
+def load_file(csv_file: str | Path) -> int:
+
+    with psycopg.connect(**database_settings(), autocommit=True) as connection:
+        inserted = load_csv(csv_file, connection)
+        total = connection.execute("SELECT count(*) FROM weather_forecasts").fetchone()[0]
+    print(f"Inserted {inserted} new forecast rows. Database total: {total}.")
+    print("Existing snapshot rows are skipped; later fetches are kept separately.")
+    return inserted
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv_file", type=Path, help="CSV produced by python -m weather_etl.transform")
     args = parser.parse_args()
-    with psycopg.connect(**database_settings(), autocommit=True) as connection:
-        inserted = load_csv(args.csv_file, connection)
-        total = connection.execute("SELECT count(*) FROM weather_forecasts").fetchone()[0]
-    print(f"Inserted {inserted} new forecast rows. Database total: {total}.")
-    print("Existing snapshot rows are skipped; later fetches are kept separately.")
+    load_file(args.csv_file)
 
 
 if __name__ == "__main__":

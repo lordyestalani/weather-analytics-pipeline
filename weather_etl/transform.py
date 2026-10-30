@@ -6,6 +6,8 @@ import json
 import math
 from pathlib import Path
 
+PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
+
 
 def transform(payload, metadata):
     """Validate parallel arrays before combining their matching positions."""
@@ -47,11 +49,9 @@ def transform(payload, metadata):
     return rows
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("raw_file", type=Path, help="Raw forecast JSON (not the metadata file)")
-    args = parser.parse_args()
-    raw_path = args.raw_file.resolve()
+def transform_file(raw_file: str | Path) -> Path:
+    raw_path = Path(raw_file).resolve()
+
     metadata_path = raw_path.with_suffix(".metadata.json")
     payload = json.loads(raw_path.read_text(encoding="utf-8"))
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -59,7 +59,7 @@ def main():
         raise ValueError("Metadata does not refer to the selected raw file")
     rows = transform(payload, metadata)
 
-    output_directory = Path(__file__).resolve().parents[1] / "data" / "processed"
+    output_directory = PROJECT_DIRECTORY / "data" / "processed"
     output_directory.mkdir(parents=True, exist_ok=True)
     output_path = output_directory / (raw_path.stem + ".csv")
     # Reprocessing the same snapshot replaces its CSV; the raw input stays intact.
@@ -68,6 +68,14 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
     print(f"Saved {len(rows)} validated forecast rows: {output_path}")
+    return output_path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("raw_file", type=Path, help="Raw forecast JSON (not the metadata file)")
+    args = parser.parse_args()
+    transform_file(args.raw_file)
 
 
 if __name__ == "__main__":
