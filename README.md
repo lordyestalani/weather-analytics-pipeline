@@ -9,8 +9,8 @@ Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
                   extract      transform       load
 ```
 
-Airflow orchestrates a manual extract -> transform -> load DAG in Docker. The
-ETL modules can also run directly from your terminal. Automatic scheduling and
+Airflow orchestrates a daily extract -> transform -> load DAG in Docker. The
+ETL modules can also run directly from your terminal. Date-based processing and
 additional cities are future milestones.
 
 ## Requirements
@@ -163,11 +163,30 @@ docker compose logs --tail 50 airflow-scheduler airflow-dag-processor
 The `/api/v2/monitor/health` endpoint reports component status. An HTTP 200 alone
 does not mean all components are healthy; inspect the returned status fields.
 
-## Run the weather DAG manually
+## Daily schedule and manual runs
 
-Open [Airflow](http://localhost:8080), find `weather_etl`, and choose **Trigger Dag**.
-It is enabled on first discovery and has `schedule=None`, so it only runs when you
-trigger it. No daily schedule or automatic task retries are configured yet.
+The `weather_etl` DAG runs daily at **6:00 AM Asia/Manila** using the cron expression
+`0 6 * * *` and an explicit CronTriggerTimetable. Its first scheduled run is
+**October 31, 2026 at 6:00 AM Philippine time** (October 30 at 22:00 UTC).
+The fixed, timezone-aware start date establishes the first allowed trigger.
+
+The scheduler must be running for on-time execution. Keep Docker Desktop and the
+project containers running. `catchup=False` prevents a backlog of historical runs,
+and `max_active_runs=1` keeps two DAG runs from executing at the same time. This
+schedule collects the forecast available when extraction executes; date-specific
+processing and historical backfills are a later milestone.
+
+Each task has **two retries with a five-minute delay**, for up to three attempts
+including the initial attempt. A failed task enters `up_for_retry` while attempts
+remain. If all attempts fail, downstream tasks do not continue. Retries of transform
+and load keep the upstream filename; extraction retries make a new request. Existing
+snapshot rows remain protected by the database primary key.
+
+Airflow stores timestamps in UTC; the UI timezone selector controls how you see
+them. The DAG's schedule remains 6:00 AM Philippine time regardless of that display.
+
+To run immediately, open [Airflow](http://localhost:8080), find `weather_etl`, and
+choose **Trigger Dag**. Manual triggering is still supported alongside the schedule.
 
 You can also trigger it from PowerShell:
 
@@ -343,7 +362,7 @@ docker compose run --rm --no-deps -e WEATHER_DB_TESTS=1 -v "${PWD}/tests:/opt/ai
 ```
 
 This temporarily mounts `tests/` read-only and uses the container's database
-settings. The DAG check verifies manual scheduling and the three task dependencies.
+settings. The DAG checks verify the first and following daily trigger times and the three task dependencies.
 The file-handoff checks use temporary files; the external HTTP response is mocked
 only for the offline extractor test.
 
@@ -399,7 +418,7 @@ package folder. `tests/__init__.py` enables recursive unittest discovery.
 - compose.yaml: weather database and Airflow services, health checks, and persistent storage.
 - docker/airflow/Dockerfile: pinned Airflow image with pipeline dependencies.
 - `.env.example`: configuration template; actual `.env` is local.
-- dags/weather_etl_dag.py: the manual three-task weather workflow.
+- dags/weather_etl_dag.py: the daily three-task weather workflow and retry policy.
 - 	ests/: file handoff, transformation, database, and DAG checks.
 
 Generated data and the virtual environment are ignored by Git. No database files
@@ -407,9 +426,9 @@ are stored in the repository.
 
 ## Next milestones
 
-1. Add daily scheduling and task retries.
-2. Add date-based processing and recovery of missed data.
-3. Cebu and Davao, daily summaries, and project architecture documentation.
+1. Add date-based processing and recovery of missed data.
+2. Expand to Cebu and Davao.
+3. Add daily summaries and project architecture documentation.
 
 ## Sources
 

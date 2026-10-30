@@ -1,15 +1,19 @@
-"""Manually collect, validate, and load a Manila weather forecast snapshot."""
+"""Collect, validate, and load a Manila weather forecast daily at 6 AM."""
 
-from datetime import datetime, timezone
+from datetime import timedelta
+
+import pendulum
 
 from airflow.sdk import dag, task
+from airflow.timetables.trigger import CronTriggerTimetable
 
 
 @dag(
     dag_id="weather_etl",
-    schedule=None,
-    start_date=datetime(2026, 10, 30, tzinfo=timezone.utc),
+    schedule=CronTriggerTimetable("0 6 * * *", timezone="Asia/Manila", run_immediately=False),
+    start_date=pendulum.datetime(2026, 10, 31, 6, tz="Asia/Manila"),
     catchup=False,
+    default_args={"retries": 2, "retry_delay": timedelta(minutes=5)},
     max_active_runs=1,
     is_paused_upon_creation=False,
     tags=["weather", "etl"],
