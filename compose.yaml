@@ -72,7 +72,10 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    command: ["airflow", "db", "migrate"]
+    command: ["python", "/opt/airflow/init_airflow.py"]
+    environment:
+      <<: *airflow-environment
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?Set AIRFLOW_ADMIN_PASSWORD in .env}
     depends_on:
       airflow-db:
         condition: service_healthy

@@ -4,3 +4,4 @@
 !docker/
 !docker/airflow/
 !docker/airflow/Dockerfile
+!docker/airflow/init_airflow.py

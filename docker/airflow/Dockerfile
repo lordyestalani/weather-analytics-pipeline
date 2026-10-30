@@ -7,3 +7,5 @@ RUN pip install --no-cache-dir "apache-airflow==3.3.2" -r /requirements.txt \
 
 # New named volumes inherit this writable directory's ownership and permissions.
 RUN mkdir -p /opt/airflow/auth && chmod 0770 /opt/airflow/auth
+
+COPY --chown=airflow:root docker/airflow/init_airflow.py /opt/airflow/init_airflow.py

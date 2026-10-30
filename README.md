@@ -49,6 +49,7 @@ contains placeholders. Environment variables override the file's values.
 The current local `.env` already contains generated Airflow settings. On a fresh
 checkout, fill in the Airflow settings from `.env.example`:
 
+- `AIRFLOW_ADMIN_PASSWORD`: your local UI password for username `admin`.
 - `AIRFLOW_DB_PASSWORD`: a separate metadata database password. Use letters and
   numbers or generate it with the JWT command below, since it is part of a URL.
 - `AIRFLOW_FERNET_KEY`: generate a valid Fernet key with:
@@ -93,7 +94,7 @@ scheduler executes tasks locally. This is a learning environment bound to localh
 | --- | --- |
 | `weather-db` | Stores weather records; reachable locally on port 5433 |
 | `airflow-db` | Stores Airflow's internal metadata; no published host port |
-| `airflow-init` | Runs database migrations, then exits successfully |
+| `airflow-init` | Runs migrations and synchronizes the UI password, then exits successfully |
 | `airflow-api-server` | Serves the UI and APIs at localhost:8080 |
 | `airflow-scheduler` | Schedules tasks and runs them using LocalExecutor |
 | `airflow-dag-processor` | Parses the Python files in `dags/` |
@@ -115,17 +116,20 @@ then starts the API server, scheduler, and DAG processor. `airflow-init` showing
 `Exited (0)` is expected. First startup can take a few minutes. Docker should have
 at least 4 GB of memory available, preferably 8 GB.
 
-Open [http://localhost:8080](http://localhost:8080). The username is `admin`.
-Airflow's development SimpleAuthManager generates its password on first startup.
-Read it locally with:
+Open [http://localhost:8080](http://localhost:8080). The username is `admin` and
+the password is `AIRFLOW_ADMIN_PASSWORD` from your local `.env`.
+
+`airflow-init` writes that value to the password file used by SimpleAuthManager.
+To change the password, edit `AIRFLOW_ADMIN_PASSWORD` in `.env`, then run:
 
 ```powershell
-docker compose exec airflow-api-server cat /opt/airflow/auth/passwords.json
+docker compose run --rm airflow-init
 ```
 
-The JSON contains the password for `admin`; it persists in the `airflow_auth`
-named volume. Do not commit or publish that output. This authentication manager
-is intended for development and testing.
+The next login uses the updated password; an API restart is not required.
+Do not commit `.env` or publish its values. SimpleAuthManager is intended for
+local development and testing; its password file remains in the
+`airflow_auth` named volume.
 
 ### Shared files and dependencies
 
@@ -134,7 +138,7 @@ is intended for development and testing.
 - `data/` is shared read/write at `/opt/airflow/project/data`.
 - `PYTHONPATH` makes the pipeline package importable inside each Airflow service.
 - The Dockerfile installs `requirements.txt` at build time while keeping Airflow pinned.
-- Airflow logs, generated UI credentials, and metadata use separate named volumes.
+- Airflow logs, the UI password file, and metadata use separate named volumes.
 
 Inside containers, the weather database host is `weather-db` and port is `5432`.
 The Compose environment supplies these values; your local `.env` keeps `localhost`
