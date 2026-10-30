@@ -10,3 +10,5 @@ __pycache__/
 
 # Generated API snapshots are reproducible; keep them out of Git.
 data/raw/
+
+data/processed/
