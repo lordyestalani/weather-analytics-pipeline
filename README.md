@@ -18,7 +18,8 @@ Airflow scheduling and additional cities are future milestones.
 - Docker Desktop running with Linux containers and Docker Compose.
 - An internet connection for extraction and initial dependency installation.
 
-The extractor and transformer use Python's standard library. The loader uses
+The transformer uses Python's standard library. The extractor uses Requests for
+HTTP requests and default certificate verification. The loader uses
 [Psycopg](https://www.psycopg.org/psycopg3/docs/basic/usage.html) to connect to PostgreSQL
 and python-dotenv to read local configuration.
 
@@ -231,11 +232,18 @@ The free endpoint is intended for noncommercial use within its usage limits.
 
 Database runtime: [official PostgreSQL Docker image](https://hub.docker.com/_/postgres).
 
-## Local verification note
+## HTTPS certificate verification
 
-The database milestone was checked with a previously saved real API response:
-24 rows inserted on the first load, zero on the repeat, and 10 tests passed with
-database tests enabled. During that check, a fresh request under local Python 3.11
-failed TLS certificate verification with "certificate has expired". Certificate
-verification remains enabled; the certificate issue has not been resolved. Saved
-snapshots can still be transformed and loaded offline.
+The extractor uses [Requests](https://requests.readthedocs.io/en/latest/user/advanced/#ssl-cert-verification)
+with its default certificate verification and maintained CA bundle from certifi.
+No custom TLS context or truststore configuration is needed. Install dependencies
+into the virtual environment before running extraction.
+
+The extractor checks HTTP error statuses before saving the original JSON response
+and records the full request URL in the metadata. Its 30-second timeout limits
+network waiting. Requests does not impose a total deadline for the entire download.
+
+On the local Windows setup, Python's default urllib/OpenSSL verification selected
+an expired intermediate certificate. A fresh Requests installation successfully
+fetched the same API with default verification enabled. Other environments should
+also be checked when the extractor is moved into Docker or deployed.

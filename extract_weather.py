@@ -3,8 +3,8 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
-from urllib.request import urlopen
+
+import requests
 
 
 def main():
@@ -16,11 +16,13 @@ def main():
         "timezone": "Asia/Manila",
         "forecast_days": 1,
     }
-    url = "https://api.open-meteo.com/v1/forecast?" + urlencode(parameters)
+    url = "https://api.open-meteo.com/v1/forecast"
 
-    # A timeout prevents a request from waiting indefinitely.
-    with urlopen(url, timeout=30) as response:
-        raw_response = response.read()
+    # Requests verifies HTTPS certificates by default. A timeout limits waiting.
+    with requests.get(url, params=parameters, timeout=30) as response:
+        response.raise_for_status()
+        raw_response = response.content
+        source_url = response.url
 
     # Confirm it is JSON before saving it. Keep the original response bytes.
     payload = json.loads(raw_response)
@@ -39,7 +41,7 @@ def main():
         "city": "Manila",
         "data_type": "forecast",
         "fetched_at_utc": fetched_at.isoformat(),
-        "source_url": url,
+        "source_url": source_url,
         "raw_file": output_path.name,
     }
     metadata_path = output_path.with_suffix(".metadata.json")
