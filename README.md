@@ -1,94 +1,241 @@
 # Philippine Weather ETL Pipeline
 
-A learning project for Python, SQL, and data engineering, progressing toward
-a daily Apache Airflow DAG. The intended analytical output is a comparison of
-weather across Manila, Cebu, and Davao.
+A learning project for Python, SQL, and data engineering, progressing toward a daily Apache Airflow DAG. The intended analytical output is a comparison of weather across Manila, Cebu, and Davao.
 
-## Current milestone: extract and transform Manila's forecast
-
-The project currently fetches one day's hourly forecast for Manila and saves
-the original JSON response plus a separate metadata file. It uses only Python's
-standard library: no third-party packages or API key are required.
-
-The transform step produces validated CSV rows. PostgreSQL loading and Airflow orchestration are future steps.
-
-## Run
-
-Install Python 3.10 or newer, then run from the repository directory:
-
-```powershell
-python extract_weather.py
-```
-
-On Windows, `py extract_weather.py` also works if the Python launcher is installed.
-An internet connection is required. HTTP, network, timeout, and JSON errors cause
-the script to exit with an error so a future orchestrator can detect failure.
-
-Output appears in `data/raw/`:
+## Current milestone: a working ETL pipeline for Manila
 
 ```text
-manila_forecast_<UTC timestamp>.json
-manila_forecast_<UTC timestamp>.metadata.json
+Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
+                  extract      transform       load
 ```
 
-The metadata records the city, source request URL, and UTC fetch completion time.
-Each run creates a new snapshot because forecasts for the same hour can change.
-Generated snapshots are ignored by Git.
+Python runs locally. PostgreSQL runs in Docker with a persistent named volume.
+Airflow scheduling and additional cities are future milestones.
 
-## Understanding the data
+## Requirements
 
-The `hourly` object contains parallel arrays. Values at the same position in
-`time`, `temperature_2m`, `relative_humidity_2m`, and `precipitation` describe
-one weather hour. The response's `hourly_units` object specifies the units.
+- Python 3.10 or newer (developed with Python 3.11).
+- Docker Desktop running with Linux containers and Docker Compose.
+- An internet connection for extraction and initial dependency installation.
 
-Weather timestamps use `Asia/Manila`; filenames and fetch metadata use UTC.
-The fetch time is not the model's forecast issue time. This endpoint supplies
-modeled forecasts, not direct station observations.
+The extractor and transformer use Python's standard library. The loader uses
+[Psycopg](https://www.psycopg.org/psycopg3/docs/basic/usage.html) to connect to PostgreSQL
+and python-dotenv to read local configuration.
 
-## Learning roadmap
+## Setup (PowerShell)
 
-1. Extract and preserve a raw API response.
-2. Transform parallel arrays into validated rows (current step).
-3. Load PostgreSQL and handle repeated processing without duplicates.
-4. Add date-based processing and recovery of missed data.
-5. Schedule and monitor the pipeline using Apache Airflow.
-6. Expand to three cities and build daily analytical summaries.
+Run from the repository directory:
 
-## Data source and attribution
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+For a fresh checkout, create local configuration:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Set `WEATHER_DB_PASSWORD` in `.env` to your own local password before starting the
+database. If `.env` already exists, keep it. The initial setup in this project
+already generated a local password. `.env` is ignored by Git; `.env.example`
+contains placeholders. Environment variables override the file's values.
+
+Start PostgreSQL and wait for it to be ready:
+
+```powershell
+docker compose up -d --wait --wait-timeout 60
+docker compose ps
+```
+
+The local connection defaults are host `localhost`, port `5433`, database `weather`,
+and user `weather`. Docker maps your local port 5433 to the container's port 5432.
+The service binds to localhost. You can change the host port in `.env` if needed.
+
+## 1. Extract
+
+```powershell
+.\.venv\Scripts\python.exe extract_weather.py
+```
+
+This requests one day's hourly forecast for Manila and writes two files:
+
+```text
+data/raw/manila_forecast_<UTC timestamp>.json
+data/raw/manila_forecast_<UTC timestamp>.metadata.json
+```
+
+The raw JSON is preserved unmodified. Metadata records the city, source URL,
+and UTC fetch completion time, which is different from the forecast model's issue time.
+Each run creates a separate snapshot. The free noncommercial endpoint requires no API key.
+
+HTTP, timeout, network, or JSON errors fail the run rather than reporting success.
+
+## 2. Transform
+
+Use the actual raw filename printed by the extractor, not the metadata filename:
+
+```powershell
+.\.venv\Scripts\python.exe transform_weather.py "data/raw/manila_forecast_<UTC timestamp>.json"
+```
+
+Replace `<UTC timestamp>` with the timestamp in your filename. The matching metadata
+file must be next to the raw response. This step works offline and writes a CSV to
+`data/processed/` with the same base filename.
+
+The source contains parallel arrays: values at the same position in `time`,
+`temperature_2m`, `relative_humidity_2m`, and `precipitation` describe one weather hour.
+The transformation combines them into rows and keeps provenance on every row.
+
+Validation rejects unequal or empty arrays, duplicate timestamps, missing or
+nonfinite measurements, unexpected units, humidity outside 0-100%, and negative
+precipitation. Missing keys also fail the run. Missing measurements are not replaced
+with zero. Reprocessing the same snapshot replaces its CSV; the raw input stays intact.
+CSV writes are not atomic yet, so rerun transformation if a write is interrupted.
+
+## 3. Load
+
+Use the CSV filename printed by the transform step:
+
+```powershell
+.\.venv\Scripts\python.exe load_weather.py "data/processed/manila_forecast_<UTC timestamp>.csv"
+```
+
+The loader creates the table from `sql/schema.sql` if it does not already exist,
+converts CSV strings into numbers and timestamps, and inserts the batch in one
+transaction. A failed insertion rolls back the whole batch. SQL parameters keep
+values separate from SQL instructions.
+
+### Record identity and repeat loads
+
+A record is unique by:
+
+```text
+(city, weather_time_local, timezone, fetched_at_utc)
+```
+
+Loading the same snapshot again inserts zero additional rows using
+`ON CONFLICT DO NOTHING`. Existing snapshot records are immutable: editing the CSV
+and reloading the same key does not update them. A later fetch retains a new forecast
+version for the same weather hour. Multiple forecasts for an hour are intentional.
+
+`weather_time_local` is a SQL timestamp without an offset, accompanied by the source
+timezone. `fetched_at_utc` is a timezone-aware SQL timestamp. These fields represent
+different events. Data is modeled forecast output, not direct station observations.
+
+## Inspect the database
+
+Open an interactive SQL prompt:
+
+```powershell
+docker compose exec weather-db sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+Count all stored forecast records:
+
+```sql
+SELECT count(*) FROM weather_forecasts;
+```
+
+Inspect one snapshot's hourly records:
+
+```sql
+SELECT city, weather_time_local, temperature_c,
+       relative_humidity_pct, precipitation_mm, fetched_at_utc
+FROM weather_forecasts
+ORDER BY fetched_at_utc DESC, weather_time_local
+LIMIT 24;
+```
+
+Compare daily forecasts using only the latest fetch per city, hour, and timezone:
+
+```sql
+WITH latest AS (
+    SELECT DISTINCT ON (city, weather_time_local, timezone) *
+    FROM weather_forecasts
+    ORDER BY city, weather_time_local, timezone, fetched_at_utc DESC
+)
+SELECT city, weather_time_local::date AS weather_date,
+       round(avg(temperature_c)::numeric, 2) AS average_temperature_c,
+       round(sum(precipitation_mm)::numeric, 2) AS total_precipitation_mm
+FROM latest
+GROUP BY city, weather_time_local::date
+ORDER BY weather_date, city;
+```
+
+Selecting the latest version avoids counting the same hour's precipitation across
+multiple forecast snapshots. These summaries describe forecasts, not measured outcomes.
+Exit psql with `\q`.
+
+## Tests
+
+Run the offline transform tests (database tests are skipped):
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -v
+```
+
+With the local database running, enable the integration tests too:
+
+```powershell
+$env:WEATHER_DB_TESTS = "1"
+.\.venv\Scripts\python.exe -m unittest discover -v
+Remove-Item Env:WEATHER_DB_TESTS
+```
+
+Database tests create and remove a private temporary schema. They check duplicate
+prevention, forecast history, batch rollback, missing measurements, timestamp offsets,
+and empty input without changing your weather table.
+
+## Stop and restart
+
+```powershell
+docker compose stop
+docker compose start
+```
+
+`docker compose down` removes the project containers and network while keeping its
+named database volume. Do not add `--volumes` unless you intend to delete stored data.
+PostgreSQL initialization credentials are applied only when its volume is first
+created; editing the password in `.env` does not change an existing database password.
+
+The local Docker database uses an administrative account for this learning milestone.
+A deployment would need a separate application role and managed secrets.
+
+## Repository files
+
+- `extract_weather.py`: HTTP extraction and raw snapshots.
+- `transform_weather.py`: validated rows and CSV output.
+- `load_weather.py`: transactional, repeatable database loading.
+- `sql/schema.sql`: table types, primary key, and constraints.
+- `compose.yaml`: PostgreSQL container, health check, and persistent storage.
+- `.env.example`: configuration template; actual `.env` is local.
+- `test_transform_weather.py`, `test_load_weather.py`: transformation and database checks.
+
+Generated data and the virtual environment are ignored by Git. No database files
+are stored in the repository.
+
+## Next milestones
+
+1. Date-based processing and recovery of missed data.
+2. Airflow DAGs, schedules, retries, and monitoring.
+3. Cebu and Davao, daily summaries, and project architecture documentation.
+
+## Sources
 
 Weather data provided by [Open-Meteo](https://open-meteo.com/).
 See the [API documentation](https://open-meteo.com/en/docs) and
 [terms and data attribution requirements](https://open-meteo.com/en/terms).
 The free endpoint is intended for noncommercial use within its usage limits.
 
+Database runtime: [official PostgreSQL Docker image](https://hub.docker.com/_/postgres).
 
-## Transform a saved snapshot
+## Local verification note
 
-Choose a raw JSON file from `data/raw/` and supply its actual filename:
-
-```powershell
-python transform_weather.py "data/raw/manila_forecast_<UTC timestamp>.json"
-```
-
-Replace `<UTC timestamp>` with the timestamp in your filename. The matching
-`.metadata.json` file must be next to the raw JSON. This step works offline.
-
-The script writes one CSV row per weather hour to `data/processed/`. Each row
-includes the city, local weather time and timezone, measurements with explicit
-units in column names, UTC fetch time, data type, and source filename.
-
-Validation rejects unequal or empty arrays, duplicate timestamps, missing or
-nonfinite measurements, unexpected units, humidity outside 0–100%, and negative
-precipitation. Missing keys also fail the run. This first version stops on invalid
-input instead of silently discarding records or treating missing values as zero.
-
-Reprocessing the same snapshot replaces its CSV. Different snapshots retain
-separate outputs. This is file-level repeatability; database deduplication comes
-later. Validation finishes before the output is opened. CSV writes are not yet
-atomic, so an interrupted write should be rerun.
-
-Run the focused data-quality tests with Python's built-in test runner:
-
-```powershell
-python -m unittest discover -v
-```
+The database milestone was checked with a previously saved real API response:
+24 rows inserted on the first load, zero on the repeat, and 10 tests passed with
+database tests enabled. During that check, a fresh request under local Python 3.11
+failed TLS certificate verification with "certificate has expired". Certificate
+verification remains enabled; the certificate issue has not been resolved. Saved
+snapshots can still be transformed and loaded offline.
