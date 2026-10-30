@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 from dotenv import load_dotenv
 
-PROJECT_DIRECTORY = Path(__file__).resolve().parent
+PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
 COLUMNS = (
     "city", "weather_time_local", "timezone", "temperature_c",
     "relative_humidity_pct", "precipitation_mm", "fetched_at_utc",
@@ -90,7 +90,7 @@ def load_csv(csv_path, connection):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv_file", type=Path, help="CSV produced by transform_weather.py")
+    parser.add_argument("csv_file", type=Path, help="CSV produced by python -m weather_etl.transform")
     args = parser.parse_args()
     with psycopg.connect(**database_settings(), autocommit=True) as connection:
         inserted = load_csv(args.csv_file, connection)

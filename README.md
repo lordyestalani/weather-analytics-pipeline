@@ -57,7 +57,7 @@ The service binds to localhost. You can change the host port in `.env` if needed
 ## 1. Extract
 
 ```powershell
-.\.venv\Scripts\python.exe extract_weather.py
+.\.venv\Scripts\python.exe -m weather_etl.extract
 ```
 
 This requests one day's hourly forecast for Manila and writes two files:
@@ -78,7 +78,7 @@ HTTP, timeout, network, or JSON errors fail the run rather than reporting succes
 Use the actual raw filename printed by the extractor, not the metadata filename:
 
 ```powershell
-.\.venv\Scripts\python.exe transform_weather.py "data/raw/manila_forecast_<UTC timestamp>.json"
+.\.venv\Scripts\python.exe -m weather_etl.transform "data/raw/manila_forecast_<UTC timestamp>.json"
 ```
 
 Replace `<UTC timestamp>` with the timestamp in your filename. The matching metadata
@@ -100,7 +100,7 @@ CSV writes are not atomic yet, so rerun transformation if a write is interrupted
 Use the CSV filename printed by the transform step:
 
 ```powershell
-.\.venv\Scripts\python.exe load_weather.py "data/processed/manila_forecast_<UTC timestamp>.csv"
+.\.venv\Scripts\python.exe -m weather_etl.load "data/processed/manila_forecast_<UTC timestamp>.csv"
 ```
 
 The loader creates the table from `sql/schema.sql` if it does not already exist,
@@ -206,13 +206,38 @@ A deployment would need a separate application role and managed secrets.
 
 ## Repository files
 
-- `extract_weather.py`: HTTP extraction and raw snapshots.
-- `transform_weather.py`: validated rows and CSV output.
-- `load_weather.py`: transactional, repeatable database loading.
+```text
+weather-etl/
+|-- weather_etl/         # Python pipeline package
+|   |-- __init__.py
+|   |-- extract.py
+|   |-- transform.py
+|   `-- load.py
+|-- tests/               # Offline and database tests
+|-- sql/
+|   `-- schema.sql
+|-- data/                # Generated files, ignored by Git
+|   |-- raw/
+|   `-- processed/
+|-- compose.yaml
+|-- requirements.txt
+|-- .env.example
+|-- .gitignore
+`-- README.md
+```
+
+Run module commands from the repository root. `python -m weather_etl.extract`
+means run the `extract` module inside the `weather_etl` package. Scripts locate
+`.env`, SQL, and output directories relative to the project root, not their own
+package folder. `tests/__init__.py` enables recursive unittest discovery.
+
+- `weather_etl/extract.py`: HTTP extraction and raw snapshots.
+- `weather_etl/transform.py`: validated rows and CSV output.
+- `weather_etl/load.py`: transactional, repeatable database loading.
 - `sql/schema.sql`: table types, primary key, and constraints.
 - `compose.yaml`: PostgreSQL container, health check, and persistent storage.
 - `.env.example`: configuration template; actual `.env` is local.
-- `test_transform_weather.py`, `test_load_weather.py`: transformation and database checks.
+- `tests/test_transform_weather.py`, `tests/test_load_weather.py`: transformation and database checks.
 
 Generated data and the virtual environment are ignored by Git. No database files
 are stored in the repository.

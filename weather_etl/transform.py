@@ -59,7 +59,7 @@ def main():
         raise ValueError("Metadata does not refer to the selected raw file")
     rows = transform(payload, metadata)
 
-    output_directory = Path(__file__).resolve().parent / "data" / "processed"
+    output_directory = Path(__file__).resolve().parents[1] / "data" / "processed"
     output_directory.mkdir(parents=True, exist_ok=True)
     output_path = output_directory / (raw_path.stem + ".csv")
     # Reprocessing the same snapshot replaces its CSV; the raw input stays intact.

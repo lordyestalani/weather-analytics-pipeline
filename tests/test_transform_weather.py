@@ -1,6 +1,6 @@
 import unittest
 
-from transform_weather import transform
+from weather_etl.transform import transform
 
 
 class TransformTests(unittest.TestCase):

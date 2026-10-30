@@ -10,7 +10,7 @@ from uuid import uuid4
 import psycopg
 from psycopg import sql
 
-from load_weather import database_settings, load_csv
+from weather_etl.load import database_settings, load_csv
 
 
 @unittest.skipUnless(os.getenv("WEATHER_DB_TESTS") == "1", "Set WEATHER_DB_TESTS=1 with the local database running")
@@ -22,7 +22,7 @@ class LoadTests(unittest.TestCase):
         self.connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         self.addCleanup(lambda: self.connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))))
         self.connection.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
-        self.connection.execute((Path(__file__).parent / "sql" / "schema.sql").read_text(encoding="utf-8-sig"))
+        self.connection.execute((Path(__file__).resolve().parents[1] / "sql" / "schema.sql").read_text(encoding="utf-8-sig"))
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.csv_path = Path(temporary.name) / "forecast.csv"

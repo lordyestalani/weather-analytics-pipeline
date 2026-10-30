@@ -28,7 +28,7 @@ def main():
     payload = json.loads(raw_response)
     fetched_at = datetime.now(timezone.utc)
     snapshot_name = fetched_at.strftime("%Y%m%dT%H%M%S_%fZ")
-    output_directory = Path(__file__).resolve().parent / "data" / "raw"
+    output_directory = Path(__file__).resolve().parents[1] / "data" / "raw"
     output_directory.mkdir(parents=True, exist_ok=True)
     output_path = output_directory / f"manila_forecast_{snapshot_name}.json"
 
