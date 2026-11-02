@@ -12,3 +12,7 @@ __pycache__/
 data/raw/
 
 data/processed/
+
+# Keep only the standalone Power BI report in Git.
+/power_bi/*
+!/power_bi/weather_analytics.pbix

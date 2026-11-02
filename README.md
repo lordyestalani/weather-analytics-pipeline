@@ -606,6 +606,8 @@ weather-etl/
 |   |-- schema.sql
 |   |-- analytics.sql
 |   `-- migrations/
+|-- power_bi/
+|   `-- weather_analytics.pbix # Standalone dashboard
 |-- data/                # Generated files, ignored by Git
 |   |-- raw/
 |   `-- processed/
@@ -638,6 +640,36 @@ package folder. `tests/__init__.py` enables recursive unittest discovery.
 
 Generated data and the virtual environment are ignored by Git. No database files
 are stored in the repository.
+
+## Power BI dashboard
+
+Open [weather_analytics.pbix](power_bi/weather_analytics.pbix) for the three-page
+report: city overview, hourly weather patterns, and raw snapshot history.
+The report connects to PostgreSQL in Import mode; use **Home > Refresh** after
+the pipeline loads new data. Weather metrics use the analytical views, while
+the audit page shows preserved raw versions.
+
+The PBIX is standalone and includes its saved data, visuals, queries, and DAX
+measures. It opens without any supporting project files. Only the PBIX is kept
+in Git; other files in `power_bi/` are local working files and are ignored.
+
+To refresh with your own local data:
+
+1. Start PostgreSQL and run the ETL, then create the analytical views using the
+   instructions above.
+2. Open the PBIX in Power BI Desktop and select **Home > Refresh**.
+3. Connect to PostgreSQL at `localhost:5433`, database `weather`, using your local
+   database credentials when prompted. Update the data source settings if your
+   server or port differs.
+4. Save the report to retain the refreshed data.
+
+Opening the report displays its cached data; it does not automatically refresh
+PostgreSQL or run Airflow. Use the bottom page tabs to navigate. Overview metrics
+use the latest selected complete weather day; rainfall is averaged per city.
+Hourly charts use the latest selected weather date, and snapshot history counts
+preserved forecast versions. Weather timestamps use Asia/Manila time; fetch
+timestamps use UTC. Historical forecasts represent model output, not station
+observations.
 
 ## Next milestones
 
