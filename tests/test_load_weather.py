@@ -78,5 +78,26 @@ class LoadTests(unittest.TestCase):
             load_csv(self.csv_path, self.connection)
 
 
+    def test_historical_migration_preserves_forecasts_and_separates_data_types(self):
+        self.write_csv(self.rows)
+        load_csv(self.csv_path, self.connection)
+        # Recreate the original constraints to exercise a real existing-table upgrade.
+        self.connection.execute("ALTER TABLE weather_forecasts DROP CONSTRAINT weather_forecasts_data_type_check, ADD CONSTRAINT weather_forecasts_data_type_check CHECK (data_type = 'forecast')")
+        self.connection.execute("ALTER TABLE weather_forecasts DROP CONSTRAINT weather_forecasts_pkey, ADD PRIMARY KEY (city, weather_time_local, timezone, fetched_at_utc)")
+        migration = (Path(__file__).resolve().parents[1] / "sql" / "migrations" / "001_historical_forecasts.sql").read_text(encoding="utf-8-sig")
+        with self.connection.transaction():
+            self.connection.execute(migration)
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM weather_forecasts").fetchone()[0], 2)
+        self.write_csv([dict(row, data_type="historical_forecast") for row in self.rows])
+        self.assertEqual(load_csv(self.csv_path, self.connection), 2)
+        self.assertEqual(load_csv(self.csv_path, self.connection), 0)
+        self.assertEqual(self.connection.execute("SELECT data_type, count(*) FROM weather_forecasts GROUP BY data_type ORDER BY data_type").fetchall(), [("forecast", 2), ("historical_forecast", 2)])
+
+    def test_unknown_data_type_is_rejected(self):
+        self.rows[0]["data_type"] = "unrecognized"
+        self.write_csv(self.rows)
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            load_csv(self.csv_path, self.connection)
+
 if __name__ == "__main__":
     unittest.main()
