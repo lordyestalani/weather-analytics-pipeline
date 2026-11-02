@@ -28,6 +28,11 @@ class TransformTests(unittest.TestCase):
             "data_type": "forecast", "source_file": "snapshot.json",
         })
 
+    def test_rejects_fractional_humidity_before_writing_unloadable_csv(self):
+        self.payload["hourly"]["relative_humidity_2m"][0] = 84.5
+        with self.assertRaisesRegex(ValueError, "whole percentage"):
+            transform(self.payload, self.metadata)
+
     def test_rejects_arrays_that_would_silently_drop_hours(self):
         self.payload["hourly"]["precipitation"].pop()
         with self.assertRaises(ValueError):

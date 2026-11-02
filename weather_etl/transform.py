@@ -40,12 +40,14 @@ def transform(payload, metadata):
                 raise ValueError(f"Missing or invalid measurement at {time}")
         if not 0 <= humidity <= 100 or precipitation < 0:
             raise ValueError(f"Humidity or precipitation outside valid range at {time}")
+        if humidity != int(humidity):
+            raise ValueError(f"Humidity must be a whole percentage at {time}")
         rows.append({
             "city": metadata["city"],
             "weather_time_local": time,
             "timezone": payload["timezone"],
             "temperature_c": temperature,
-            "relative_humidity_pct": humidity,
+            "relative_humidity_pct": int(humidity),
             "precipitation_mm": precipitation,
             "fetched_at_utc": metadata["fetched_at_utc"],
             "data_type": metadata["data_type"],
