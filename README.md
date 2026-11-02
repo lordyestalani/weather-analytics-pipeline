@@ -10,8 +10,8 @@ Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
 ```
 
 Airflow orchestrates a daily extract -> transform -> load DAG in Docker. The
-ETL modules can also run directly from your terminal. Date-based processing and
-additional cities are future milestones.
+ETL modules can also run directly from your terminal. Date-based recovery is
+supported; additional cities and analytical tables are the next milestones.
 
 ## Requirements
 
@@ -172,9 +172,9 @@ The fixed, timezone-aware start date establishes the first allowed trigger.
 
 The scheduler must be running for on-time execution. Keep Docker Desktop and the
 project containers running. `catchup=False` prevents a backlog of historical runs,
-and `max_active_runs=1` keeps two DAG runs from executing at the same time. This
-schedule collects the forecast available when extraction executes; date-specific
-processing and historical backfills are a later milestone.
+and `max_active_runs=1` keeps two DAG runs from executing at the same time. The requested
+weather day comes from the run's logical date or its explicit date override; a
+late run for a past day uses the historical forecast archive.
 
 Each task has **two retries with a five-minute delay**, for up to three attempts
 including the initial attempt. A failed task enters `up_for_retry` while attempts
@@ -218,6 +218,87 @@ Use the run's Graph view to inspect each task's status and logs. Extract and
 transform log their output filenames; load logs its inserted count. If an upstream
 task fails, downstream tasks do not continue with unrelated or stale files.
 
+## Date-based processing and backfills
+
+A weather date is a local calendar day in `Asia/Manila`. Dates must use
+`YYYY-MM-DD` and cannot be in the future.
+
+| Requested day | Source | Stored data_type |
+| --- | --- | --- |
+| Today in Manila | Forecast API | `forecast` |
+| An earlier day | Historical Forecast API | `historical_forecast` |
+
+The [Historical Forecast API](https://open-meteo.com/en/docs/historical-forecast-api)
+stitches the first hours of successive archived model runs into a continuous series.
+It does **not** recreate the exact forecast JSON our original 6 AM run would have
+saved, and it is not a direct station observation. Keep these source types separate
+when comparing or aggregating records. Archive coverage varies by model; unsupported
+dates, missing values, or incomplete days fail instead of being filled with zeros.
+
+### Upgrade an existing weather database
+
+The database in this workspace has already been migrated. On another existing
+checkout, apply this migration before running the updated loader:
+
+```powershell
+Get-Content sql/migrations/001_historical_forecasts.sql -Raw | docker compose exec -T weather-db sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction -v ON_ERROR_STOP=1'
+```
+
+The migration preserves existing rows, allows `historical_forecast`, and adds
+`data_type` to the primary key. It can be reapplied. A fresh database uses the
+updated `sql/schema.sql` automatically when its first CSV is loaded.
+
+### Request one date
+
+Extract a particular date, then use the printed filenames with the existing
+transform and load commands:
+
+```powershell
+.\.venv\Scripts\python.exe -m weather_etl.extract --date 2026-11-01
+```
+
+Omitting `--date` still requests today in Manila. The response must contain exactly
+the requested day's 24 hourly timestamps before extraction saves it. Metadata now
+also records `weather_date`. Existing saved snapshots without that metadata field
+can still be transformed and loaded.
+
+### Recover an inclusive date range
+
+This command runs extract, transform, and load once per date:
+
+```powershell
+docker compose exec airflow-scheduler python -m weather_etl.backfill --start-date 2026-10-31 --end-date 2026-11-01
+```
+
+The same command works locally using `.\.venv\Scripts\python.exe -m weather_etl.backfill`.
+Both bounds are included. The range is validated before requests or writes begin,
+and days run sequentially. Each day's load has its own transaction. If a day fails,
+the command stops; earlier successful days remain committed. Resume with the
+failed or remaining date range.
+
+Re-fetching a date creates a new snapshot with a new UTC fetch time. Loading the
+same saved CSV again inserts zero duplicates; re-fetching is intentionally a new
+version, not a claim to restore the original collection time. To replay exactly
+what was collected previously, transform and load that saved raw snapshot instead.
+
+### Select a date in Airflow
+
+In **Trigger Dag**, set the optional `weather_date` field to a date such as
+`2026-10-30`. Leave it empty for the run's default date.
+
+- Scheduled runs use their logical date converted to Asia/Manila.
+- Manual runs without a logical date use their trigger time.
+- An explicit `weather_date` overrides either value.
+
+This keeps the requested date stable across delayed execution and retries.
+A late run for a past day uses the archive and is labeled accordingly. The
+6 AM schedule, retry policy, and `catchup=False` remain in effect.
+
+The range command is an application-level recovery tool, not `airflow backfill`:
+it directly runs the ETL functions. The Airflow override creates a normal DAG run
+with all three task states and logs. We are not enabling automatic catch-up of
+all historical schedule intervals.
+
 ## 1. Extract
 
 ```powershell
@@ -227,8 +308,8 @@ task fails, downstream tasks do not continue with unrelated or stale files.
 This requests one day's hourly forecast for Manila and writes two files:
 
 ```text
-data/raw/manila_forecast_<UTC timestamp>.json
-data/raw/manila_forecast_<UTC timestamp>.metadata.json
+data/raw/manila_<data_type>_<weather_date>_<UTC timestamp>.json
+data/raw/manila_<data_type>_<weather_date>_<UTC timestamp>.metadata.json
 ```
 
 The raw JSON is preserved unmodified. Metadata records the city, source URL,
@@ -242,10 +323,10 @@ HTTP, timeout, network, or JSON errors fail the run rather than reporting succes
 Use the actual raw filename printed by the extractor, not the metadata filename:
 
 ```powershell
-.\.venv\Scripts\python.exe -m weather_etl.transform "data/raw/manila_forecast_<UTC timestamp>.json"
+.\.venv\Scripts\python.exe -m weather_etl.transform "data/raw/manila_<data_type>_<weather_date>_<UTC timestamp>.json"
 ```
 
-Replace `<UTC timestamp>` with the timestamp in your filename. The matching metadata
+Use the actual filename printed by extraction, including its data type, weather date, and UTC fetch timestamp. The matching metadata
 file must be next to the raw response. This step works offline and writes a CSV to
 `data/processed/` with the same base filename.
 
@@ -264,7 +345,7 @@ CSV writes are not atomic yet, so rerun transformation if a write is interrupted
 Use the CSV filename printed by the transform step:
 
 ```powershell
-.\.venv\Scripts\python.exe -m weather_etl.load "data/processed/manila_forecast_<UTC timestamp>.csv"
+.\.venv\Scripts\python.exe -m weather_etl.load "data/processed/manila_<data_type>_<weather_date>_<UTC timestamp>.csv"
 ```
 
 The loader creates the table from `sql/schema.sql` if it does not already exist,
@@ -277,7 +358,7 @@ values separate from SQL instructions.
 A record is unique by:
 
 ```text
-(city, weather_time_local, timezone, fetched_at_utc)
+(city, weather_time_local, timezone, data_type, fetched_at_utc)
 ```
 
 Loading the same snapshot again inserts zero additional rows using
@@ -313,19 +394,19 @@ ORDER BY fetched_at_utc DESC, weather_time_local
 LIMIT 24;
 ```
 
-Compare daily forecasts using only the latest fetch per city, hour, and timezone:
+Compare daily values using only the latest fetch per city, hour, timezone, and data type:
 
 ```sql
 WITH latest AS (
-    SELECT DISTINCT ON (city, weather_time_local, timezone) *
+    SELECT DISTINCT ON (city, weather_time_local, timezone, data_type) *
     FROM weather_forecasts
-    ORDER BY city, weather_time_local, timezone, fetched_at_utc DESC
+    ORDER BY city, weather_time_local, timezone, data_type, fetched_at_utc DESC
 )
-SELECT city, weather_time_local::date AS weather_date,
+SELECT city, data_type, weather_time_local::date AS weather_date,
        round(avg(temperature_c)::numeric, 2) AS average_temperature_c,
        round(sum(precipitation_mm)::numeric, 2) AS total_precipitation_mm
 FROM latest
-GROUP BY city, weather_time_local::date
+GROUP BY city, data_type, weather_time_local::date
 ORDER BY weather_date, city;
 ```
 
@@ -389,13 +470,16 @@ weather-etl/
 |   |-- __init__.py
 |   |-- extract.py
 |   |-- transform.py
-|   `-- load.py
+|   |-- load.py
+|   |-- dates.py
+|   `-- backfill.py
 |-- tests/               # Offline and database tests
 |-- dags/                # Airflow DAG definitions
 |-- docker/
 |   -- airflow/Dockerfile
 |-- sql/
-|   `-- schema.sql
+|   |-- schema.sql
+|   `-- migrations/
 |-- data/                # Generated files, ignored by Git
 |   |-- raw/
 |   `-- processed/
@@ -415,6 +499,9 @@ package folder. `tests/__init__.py` enables recursive unittest discovery.
 - `weather_etl/transform.py`: validated rows, CSV output, and `transform_file()`.
 - `weather_etl/load.py`: transactional loading through `load_csv()` and `load_file()`.
 - `sql/schema.sql`: table types, primary key, and constraints.
+- `sql/migrations/`: upgrades for an existing weather database.
+- `weather_etl/dates.py`: shared date parsing and run-date selection.
+- `weather_etl/backfill.py`: sequential date-range recovery.
 - compose.yaml: weather database and Airflow services, health checks, and persistent storage.
 - docker/airflow/Dockerfile: pinned Airflow image with pipeline dependencies.
 - `.env.example`: configuration template; actual `.env` is local.
@@ -426,9 +513,9 @@ are stored in the repository.
 
 ## Next milestones
 
-1. Add date-based processing and recovery of missed data.
-2. Expand to Cebu and Davao.
-3. Add daily summaries and project architecture documentation.
+1. Expand to Cebu and Davao.
+2. Add daily analytical summaries.
+3. Polish the README and project architecture documentation.
 
 ## Sources
 
