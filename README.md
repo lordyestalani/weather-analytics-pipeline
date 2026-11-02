@@ -2,7 +2,7 @@
 
 A learning project for Python, SQL, and data engineering, progressing toward a daily Apache Airflow DAG. The intended analytical output is a comparison of weather across Manila, Cebu, and Davao.
 
-## Current milestone: daily ETL for Manila, Cebu, and Davao
+## Current milestone: daily ETL and analytical summaries for three cities
 
 ```text
 Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
@@ -11,7 +11,8 @@ Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
 
 Airflow orchestrates a daily extract -> transform -> load DAG in Docker. The
 ETL modules can also run directly from your terminal. Date-based recovery is
-supported for all three cities; analytical tables are the next milestone.
+supported for all three cities. PostgreSQL views provide latest-hourly data and
+daily analytical summaries.
 
 ## Requirements
 
@@ -444,25 +445,94 @@ ORDER BY fetched_at_utc DESC, weather_time_local
 LIMIT 24;
 ```
 
-Compare daily values using only the latest fetch per city, hour, timezone, and data type:
+Exit psql with `\q`.
 
-```sql
-WITH latest AS (
-    SELECT DISTINCT ON (city, weather_time_local, timezone, data_type) *
-    FROM weather_forecasts
-    ORDER BY city, weather_time_local, timezone, data_type, fetched_at_utc DESC
-)
-SELECT city, data_type, weather_time_local::date AS weather_date,
-       round(avg(temperature_c)::numeric, 2) AS average_temperature_c,
-       round(sum(precipitation_mm)::numeric, 2) AS total_precipitation_mm
-FROM latest
-GROUP BY city, data_type, weather_time_local::date
-ORDER BY weather_date, city;
+## Daily analytical outputs
+
+`sql/analytics.sql` defines two ordinary PostgreSQL views. A view is a saved SQL
+query evaluated when you query it, so subsequent ETL loads appear automatically.
+There is no extra refresh job or Airflow task, and raw snapshot history remains
+unchanged.
+
+| View | What one row represents |
+| --- | --- |
+| `latest_weather_hourly` | Latest fetched value for a city, local weather hour, timezone, and data type |
+| `daily_weather_summary` | Daily metrics for a city, local weather date, timezone, and data type |
+
+### Create the views once per database
+
+The views have already been created in this workspace. On a fresh checkout, run
+the ETL at least once to create `weather_forecasts`, then apply:
+
+```powershell
+Get-Content sql/analytics.sql -Raw | docker compose exec -T weather-db sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction -v ON_ERROR_STOP=1'
 ```
 
-Selecting the latest version avoids counting the same hour's precipitation across
-multiple forecast snapshots. These summaries describe forecasts, not measured outcomes.
-Exit psql with `\q`.
+The setup uses `CREATE OR REPLACE VIEW` and can be reapplied. It does not insert,
+update, or delete weather records. View creation is a database setup step, not
+something every city's load task needs to repeat.
+
+### Compare complete daily forecasts
+
+Open the SQL prompt using the command above, then run:
+
+```sql
+SELECT city, weather_date,
+       average_temperature_c,
+       minimum_temperature_c,
+       maximum_temperature_c,
+       average_humidity_pct,
+       total_precipitation_mm
+FROM daily_weather_summary
+WHERE data_type = 'forecast'
+  AND timezone = 'Asia/Manila'
+  AND is_complete_day
+ORDER BY weather_date DESC, maximum_temperature_c DESC, city;
+```
+
+Compare recovered historical data separately:
+
+```sql
+SELECT city, weather_date, total_precipitation_mm
+FROM daily_weather_summary
+WHERE data_type = 'historical_forecast'
+  AND timezone = 'Asia/Manila'
+  AND is_complete_day
+ORDER BY weather_date DESC, total_precipitation_mm DESC, city;
+```
+
+These metrics summarize model output. They are not station observations or proof
+of the actual temperature or rainfall.
+
+### Understand completeness and provenance
+
+- `hours_available` counts the latest records used in the summary.
+- `is_complete_day` requires 24 hour-aligned timestamps in the local calendar day.
+  All configured cities use Asia/Manila, which has 24-hour days.
+- Incomplete summaries remain visible. Their metrics cover only available hours;
+  filter `is_complete_day` when comparing full-day totals.
+- `selected_snapshot_count` reports how many fetch versions contribute the selected
+  hourly values. A summary can combine hours from different fetches; it does not
+  claim to represent one forecast issued at a single time.
+- `data_as_of_utc` is the most recent fetch time among the selected hours. It is
+  not the weather date or forecast issue time.
+- Each metric stays separate by city, timezone, and `data_type`. Historical forecast
+  recoveries are not blended with saved daily forecast snapshots.
+- Metrics are rounded to two decimal places. Hourly raw values remain available
+  in `weather_forecasts` and `latest_weather_hourly`.
+
+Check completeness explicitly:
+
+```sql
+SELECT city, weather_date, data_type, hours_available,
+       is_complete_day, selected_snapshot_count, data_as_of_utc
+FROM daily_weather_summary
+ORDER BY weather_date DESC, city, data_type;
+```
+
+Repeated snapshots are removed before aggregation. For example, collecting the
+same weather hour twice does not add its rainfall twice. A later fetch replaces
+that hour's selected value while both originals remain in snapshot history.
 
 ## Tests
 
@@ -496,6 +566,8 @@ This temporarily mounts `tests/` read-only and uses the container's database
 settings. The DAG checks verify the first and following daily trigger times and
 all three independent city chains. City checks verify request coordinates, file
 and metadata isolation, selection validation, and database key separation.
+Analytical tests check latest-version totals, source/date/timezone separation,
+complete-day flags, live view updates, and empty datasets.
 The file-handoff checks use temporary files; the external HTTP response is mocked
 only for the offline extractor test.
 
@@ -532,6 +604,7 @@ weather-etl/
 |   -- airflow/Dockerfile
 |-- sql/
 |   |-- schema.sql
+|   |-- analytics.sql
 |   `-- migrations/
 |-- data/                # Generated files, ignored by Git
 |   |-- raw/
@@ -552,6 +625,7 @@ package folder. `tests/__init__.py` enables recursive unittest discovery.
 - `weather_etl/transform.py`: validated rows, CSV output, and `transform_file()`.
 - `weather_etl/load.py`: transactional loading through `load_csv()` and `load_file()`.
 - `sql/schema.sql`: table types, primary key, and constraints.
+- `sql/analytics.sql`: latest-hourly and daily-summary views.
 - `sql/migrations/`: upgrades for an existing weather database.
 - `weather_etl/dates.py`: shared date parsing and run-date selection.
 - `weather_etl/cities.py`: configured city names and coordinates.
@@ -567,8 +641,7 @@ are stored in the repository.
 
 ## Next milestones
 
-1. Add daily analytical summaries.
-2. Polish the README and project architecture documentation.
+1. Polish the README and project architecture documentation for GitHub.
 
 ## Sources
 
