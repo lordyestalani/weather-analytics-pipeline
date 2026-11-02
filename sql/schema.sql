@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS weather_forecasts (
     precipitation_mm DOUBLE PRECISION NOT NULL
         CHECK (precipitation_mm >= 0 AND precipitation_mm < 'Infinity'::DOUBLE PRECISION),
     fetched_at_utc TIMESTAMP WITH TIME ZONE NOT NULL,
-    data_type TEXT NOT NULL CHECK (data_type = 'forecast'),
+    data_type TEXT NOT NULL CONSTRAINT weather_forecasts_data_type_check CHECK (data_type IN ('forecast', 'historical_forecast')),
     source_file TEXT NOT NULL CHECK (source_file <> ''),
-    PRIMARY KEY (city, weather_time_local, timezone, fetched_at_utc)
+    PRIMARY KEY (city, weather_time_local, timezone, data_type, fetched_at_utc)
 );
