@@ -14,10 +14,13 @@ class WeatherDagTests(unittest.TestCase):
         self.assertEqual(bag.import_errors, {})
         self.assertIn("weather_etl", bag.dags)
         dag = bag.dags["weather_etl"]
-        self.assertEqual(set(dag.task_ids), {"extract", "transform", "load"})
-        self.assertEqual(dag.get_task("extract").upstream_task_ids, set())
-        self.assertEqual(dag.get_task("transform").upstream_task_ids, {"extract"})
-        self.assertEqual(dag.get_task("load").upstream_task_ids, {"transform"})
+        expected = {f"{city}.{step}" for city in ("manila", "cebu", "davao") for step in ("extract", "transform", "load")}
+        self.assertEqual(set(dag.task_ids), expected)
+        for city in ("manila", "cebu", "davao"):
+            with self.subTest(city=city):
+                self.assertEqual(dag.get_task(f"{city}.extract").upstream_task_ids, set())
+                self.assertEqual(dag.get_task(f"{city}.transform").upstream_task_ids, {f"{city}.extract"})
+                self.assertEqual(dag.get_task(f"{city}.load").upstream_task_ids, {f"{city}.transform"})
 
 
     def test_daily_schedule_starts_at_six_in_manila_and_advances(self):

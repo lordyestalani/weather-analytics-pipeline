@@ -99,5 +99,17 @@ class LoadTests(unittest.TestCase):
         with self.assertRaises(psycopg.errors.CheckViolation):
             load_csv(self.csv_path, self.connection)
 
+
+    def test_cities_can_share_hour_and_fetch_time_without_overwriting_each_other(self):
+        for city in ("Manila", "Cebu", "Davao"):
+            self.write_csv([dict(row, city=city) for row in self.rows])
+            self.assertEqual(load_csv(self.csv_path, self.connection), 2)
+        self.assertEqual(load_csv(self.csv_path, self.connection), 0)
+        self.assertEqual(
+            self.connection.execute("SELECT city, count(*) FROM weather_forecasts GROUP BY city ORDER BY city").fetchall(),
+            [("Cebu", 2), ("Davao", 2), ("Manila", 2)],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
