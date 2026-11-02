@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from weather_etl.extract import extract_weather
+from weather_etl.load import read_rows
 from weather_etl.transform import transform_file
 
 
@@ -43,6 +44,21 @@ class FilePipelineTests(unittest.TestCase):
         self.assertEqual(metadata["raw_file"], output.name)
         self.assertEqual(metadata["city"], "Manila")
         self.assertEqual(metadata["source_url"], "https://api.open-meteo.com/v1/forecast?latitude=14.5995")
+
+    def test_integer_valued_float_humidity_survives_csv_handoff(self):
+        payload = json.loads(self.raw_bytes)
+        payload["hourly"]["relative_humidity_2m"] = [84.0] * 24
+        raw_path = self.directory / "float_humidity.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        raw_path.with_suffix(".metadata.json").write_text(json.dumps({
+            "city": "Manila", "fetched_at_utc": "2026-10-30T12:00:00+00:00",
+            "data_type": "forecast", "raw_file": raw_path.name,
+        }), encoding="utf-8")
+        with patch("weather_etl.transform.PROJECT_DIRECTORY", self.directory):
+            output = transform_file(raw_path)
+        rows = read_rows(output)
+        self.assertEqual(len(rows), 24)
+        self.assertEqual({row["relative_humidity_pct"] for row in rows}, {84})
 
     def test_transform_uses_the_supplied_snapshot_despite_unrelated_files(self):
         raw_path = self.directory / "chosen.json"
