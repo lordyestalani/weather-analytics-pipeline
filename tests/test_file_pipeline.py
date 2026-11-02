@@ -1,6 +1,7 @@
 """Check file handoff between the reusable extraction and transformation functions."""
 
 import csv
+from datetime import date
 import json
 import tempfile
 import unittest
@@ -16,7 +17,19 @@ class FilePipelineTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
-        self.raw_bytes = b'{"timezone":"Asia/Manila", "hourly_units":{"time":"iso8601","temperature_2m":"\\u00b0C","relative_humidity_2m":"%","precipitation":"mm"}, "hourly":{"time":["2026-10-30T00:00"],"temperature_2m":[26.6],"relative_humidity_2m":[84],"precipitation":[0.9]}}'
+        clock = patch("weather_etl.dates.today_in_manila", return_value=date(2026, 10, 30))
+        clock.start()
+        self.addCleanup(clock.stop)
+        self.raw_bytes = json.dumps({
+            "timezone": "Asia/Manila",
+            "hourly_units": {"time": "iso8601", "temperature_2m": "°C", "relative_humidity_2m": "%", "precipitation": "mm"},
+            "hourly": {
+                "time": [f"2026-10-30T{hour:02}:00" for hour in range(24)],
+                "temperature_2m": [26.6] * 24,
+                "relative_humidity_2m": [84] * 24,
+                "precipitation": [0.9] * 24,
+            },
+        }, indent=1).encode()
 
     def test_extract_returns_saved_snapshot_with_original_bytes_and_metadata(self):
         # Only the external HTTP response is mocked; file writing is real.
@@ -43,7 +56,7 @@ class FilePipelineTests(unittest.TestCase):
             output = transform_file(raw_path)
         with output.open(newline="", encoding="utf-8") as file:
             rows = list(csv.DictReader(file))
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 24)
         self.assertEqual(rows[0]["source_file"], "chosen.json")
         self.assertEqual(rows[0]["temperature_c"], "26.6")
         self.assertEqual(rows[0]["fetched_at_utc"], "2026-10-30T12:00:00+00:00")
