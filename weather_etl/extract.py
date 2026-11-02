@@ -1,4 +1,4 @@
-"""Fetch one requested Manila weather day and preserve its original JSON response."""
+"""Fetch one requested Philippine city weather day and preserve its original JSON response."""
 
 import argparse
 import json
@@ -8,18 +8,20 @@ from pathlib import Path
 import requests
 
 from weather_etl import dates
+from weather_etl.cities import CITIES, get_city
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
 
 
-def extract_weather(weather_date: str | date | None = None) -> Path:
+def extract_weather(weather_date: str | date | None = None, city: str = "manila") -> Path:
+    location = get_city(city)
     today = dates.today_in_manila()
     target = dates.resolve_weather_date(weather_date, today=today)
     data_type = "historical_forecast" if target < today else "forecast"
     host = "historical-forecast-api.open-meteo.com" if target < today else "api.open-meteo.com"
     parameters = {
-        "latitude": 14.5995,
-        "longitude": 120.9842,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
         "hourly": "temperature_2m,relative_humidity_2m,precipitation",
         "timezone": "Asia/Manila",
         "start_date": target.isoformat(),
@@ -39,13 +41,15 @@ def extract_weather(weather_date: str | date | None = None) -> Path:
     snapshot_name = fetched_at.strftime("%Y%m%dT%H%M%S_%fZ")
     output_directory = PROJECT_DIRECTORY / "data" / "raw"
     output_directory.mkdir(parents=True, exist_ok=True)
-    output_path = output_directory / f"manila_{data_type}_{target.isoformat()}_{snapshot_name}.json"
+    output_path = output_directory / f"{location.key}_{data_type}_{target.isoformat()}_{snapshot_name}.json"
 
     with output_path.open("xb") as output_file:
         output_file.write(raw_response)
 
     metadata = {
-        "city": "Manila",
+        "city": location.name,
+        "requested_latitude": location.latitude,
+        "requested_longitude": location.longitude,
         "weather_date": target.isoformat(),
         "data_type": data_type,
         "fetched_at_utc": fetched_at.isoformat(),
@@ -57,7 +61,7 @@ def extract_weather(weather_date: str | date | None = None) -> Path:
         json.dump(metadata, metadata_file, indent=2)
         metadata_file.write("\n")
 
-    print(f"Saved {len(payload['hourly']['time'])} hourly {data_type} records for {target}.")
+    print(f"Saved {len(payload['hourly']['time'])} hourly {data_type} records for {location.name} on {target}.")
     print(f"Raw data: {output_path}")
     print(f"Metadata: {metadata_path}")
     return output_path
@@ -66,8 +70,9 @@ def extract_weather(weather_date: str | date | None = None) -> Path:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", dest="weather_date", help="Weather day in YYYY-MM-DD; defaults to today in Asia/Manila")
+    parser.add_argument("--city", choices=tuple(CITIES), type=str.lower, default="manila", help="City to collect; defaults to manila")
     args = parser.parse_args()
-    extract_weather(args.weather_date)
+    extract_weather(args.weather_date, city=args.city)
 
 
 if __name__ == "__main__":
