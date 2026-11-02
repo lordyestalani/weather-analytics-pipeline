@@ -2,7 +2,7 @@
 
 A learning project for Python, SQL, and data engineering, progressing toward a daily Apache Airflow DAG. The intended analytical output is a comparison of weather across Manila, Cebu, and Davao.
 
-## Current milestone: a working ETL pipeline for Manila
+## Current milestone: daily ETL for Manila, Cebu, and Davao
 
 ```text
 Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
@@ -11,7 +11,7 @@ Open-Meteo API -> raw JSON -> validated CSV -> PostgreSQL
 
 Airflow orchestrates a daily extract -> transform -> load DAG in Docker. The
 ETL modules can also run directly from your terminal. Date-based recovery is
-supported; additional cities and analytical tables are the next milestones.
+supported for all three cities; analytical tables are the next milestone.
 
 ## Requirements
 
@@ -194,10 +194,12 @@ You can also trigger it from PowerShell:
 docker compose exec airflow-scheduler airflow dags trigger weather_etl
 ```
 
-The graph has three tasks:
+The graph has three independent city groups (nine tasks):
 
 ```text
-extract -> transform -> load
+manila: extract -> transform -> load
+cebu:   extract -> transform -> load
+davao:  extract -> transform -> load
 ```
 
 - `extract` calls `extract_weather()` and returns the saved raw JSON filename.
@@ -209,14 +211,61 @@ creates dependencies from function arguments. It passes the small filename strin
 through XCom; the weather data itself stays in the shared `data/` directory.
 Tasks do not search for the latest file, so other snapshots cannot change a run's input.
 
+Task IDs are prefixed with the city, such as `cebu.extract` and `davao.load`.
+Each city passes its own filenames through XCom. A failed city blocks only its
+dependent tasks; the other cities can finish. The overall DAG run still reports
+failure if a city ultimately fails.
+
 The Python modules expose reusable functions while retaining their `python -m`
 commands. SQL transactions and duplicate handling are unchanged. Re-running load
 with the same CSV inserts zero duplicate rows. Triggering a new DAG run fetches a
 new forecast snapshot, which is intentionally stored as a separate version.
 
 Use the run's Graph view to inspect each task's status and logs. Extract and
-transform log their output filenames; load logs its inserted count. If an upstream
-task fails, downstream tasks do not continue with unrelated or stale files.
+transform log their output filenames; load logs its inserted count. If a city's upstream
+task fails, its downstream tasks do not continue with unrelated or stale files.
+
+## City configuration
+
+`weather_etl/cities.py` holds the location configuration shared by extraction,
+backfills, and the DAG. The same ETL functions process every configured city.
+
+| CLI key | Stored city | Latitude | Longitude |
+| --- | --- | --- | --- |
+| `manila` | Manila | 14.5995 | 120.9842 |
+| `cebu` | Cebu | 10.31672 | 123.89071 |
+| `davao` | Davao | 7.07306 | 125.61278 |
+
+Cebu City and Davao City coordinates were verified using the
+[Open-Meteo Geocoding API](https://open-meteo.com/en/docs/geocoding-api).
+All three locations use Asia/Manila time. Metadata records the requested
+coordinates; the raw response also contains the weather model's selected grid
+coordinates, which may differ slightly.
+
+The daily DAG processes **all three cities**. Extract and backfill CLI commands
+still default to **Manila** to preserve existing usage.
+
+Extract one city:
+
+```powershell
+.\.venv\Scripts\python.exe -m weather_etl.extract --city cebu --date 2026-11-01
+```
+
+Backfill selected cities:
+
+```powershell
+docker compose exec airflow-scheduler python -m weather_etl.backfill --start-date 2026-10-31 --end-date 2026-11-01 --cities cebu davao
+```
+
+Use `--cities manila cebu davao` for all three. Unknown, empty, or duplicate city
+selections are rejected before any backfill day runs. The command processes the
+dates and selected cities sequentially. If one city-day fails, it stops and keeps
+earlier successful loads; resume using the failed date and city selection.
+
+City keys prefix output filenames; display names are stored in the CSV and
+database. The primary key already includes city, so rows for matching hours
+cannot overwrite another city's data. No new database migration is required for
+this city expansion.
 
 ## Date-based processing and backfills
 
@@ -296,7 +345,7 @@ A late run for a past day uses the archive and is labeled accordingly. The
 
 The range command is an application-level recovery tool, not `airflow backfill`:
 it directly runs the ETL functions. The Airflow override creates a normal DAG run
-with all three task states and logs. We are not enabling automatic catch-up of
+with all nine city-task states and logs. The weather-date override applies to all three cities. We are not enabling automatic catch-up of
 all historical schedule intervals.
 
 ## 1. Extract
@@ -305,11 +354,12 @@ all historical schedule intervals.
 .\.venv\Scripts\python.exe -m weather_etl.extract
 ```
 
-This requests one day's hourly forecast for Manila and writes two files:
+Without `--city`, this requests one day's hourly forecast for Manila. Other cities
+use the same command with `--city cebu` or `--city davao`. Each extraction writes two files:
 
 ```text
-data/raw/manila_<data_type>_<weather_date>_<UTC timestamp>.json
-data/raw/manila_<data_type>_<weather_date>_<UTC timestamp>.metadata.json
+data/raw/<city>_<data_type>_<weather_date>_<UTC timestamp>.json
+data/raw/<city>_<data_type>_<weather_date>_<UTC timestamp>.metadata.json
 ```
 
 The raw JSON is preserved unmodified. Metadata records the city, source URL,
@@ -323,7 +373,7 @@ HTTP, timeout, network, or JSON errors fail the run rather than reporting succes
 Use the actual raw filename printed by the extractor, not the metadata filename:
 
 ```powershell
-.\.venv\Scripts\python.exe -m weather_etl.transform "data/raw/manila_<data_type>_<weather_date>_<UTC timestamp>.json"
+.\.venv\Scripts\python.exe -m weather_etl.transform "data/raw/<city>_<data_type>_<weather_date>_<UTC timestamp>.json"
 ```
 
 Use the actual filename printed by extraction, including its data type, weather date, and UTC fetch timestamp. The matching metadata
@@ -345,7 +395,7 @@ CSV writes are not atomic yet, so rerun transformation if a write is interrupted
 Use the CSV filename printed by the transform step:
 
 ```powershell
-.\.venv\Scripts\python.exe -m weather_etl.load "data/processed/manila_<data_type>_<weather_date>_<UTC timestamp>.csv"
+.\.venv\Scripts\python.exe -m weather_etl.load "data/processed/<city>_<data_type>_<weather_date>_<UTC timestamp>.csv"
 ```
 
 The loader creates the table from `sql/schema.sql` if it does not already exist,
@@ -443,7 +493,9 @@ docker compose run --rm --no-deps -e WEATHER_DB_TESTS=1 -v "${PWD}/tests:/opt/ai
 ```
 
 This temporarily mounts `tests/` read-only and uses the container's database
-settings. The DAG checks verify the first and following daily trigger times and the three task dependencies.
+settings. The DAG checks verify the first and following daily trigger times and
+all three independent city chains. City checks verify request coordinates, file
+and metadata isolation, selection validation, and database key separation.
 The file-handoff checks use temporary files; the external HTTP response is mocked
 only for the offline extractor test.
 
@@ -472,6 +524,7 @@ weather-etl/
 |   |-- transform.py
 |   |-- load.py
 |   |-- dates.py
+|   |-- cities.py
 |   `-- backfill.py
 |-- tests/               # Offline and database tests
 |-- dags/                # Airflow DAG definitions
@@ -501,11 +554,12 @@ package folder. `tests/__init__.py` enables recursive unittest discovery.
 - `sql/schema.sql`: table types, primary key, and constraints.
 - `sql/migrations/`: upgrades for an existing weather database.
 - `weather_etl/dates.py`: shared date parsing and run-date selection.
+- `weather_etl/cities.py`: configured city names and coordinates.
 - `weather_etl/backfill.py`: sequential date-range recovery.
 - compose.yaml: weather database and Airflow services, health checks, and persistent storage.
 - docker/airflow/Dockerfile: pinned Airflow image with pipeline dependencies.
 - `.env.example`: configuration template; actual `.env` is local.
-- dags/weather_etl_dag.py: the daily three-task weather workflow and retry policy.
+- dags/weather_etl_dag.py: three city ETL groups sharing the daily schedule and retry policy.
 - 	ests/: file handoff, transformation, database, and DAG checks.
 
 Generated data and the virtual environment are ignored by Git. No database files
@@ -513,9 +567,8 @@ are stored in the repository.
 
 ## Next milestones
 
-1. Expand to Cebu and Davao.
-2. Add daily analytical summaries.
-3. Polish the README and project architecture documentation.
+1. Add daily analytical summaries.
+2. Polish the README and project architecture documentation.
 
 ## Sources
 
