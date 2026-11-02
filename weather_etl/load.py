@@ -27,7 +27,7 @@ INSERT_SQL = """
         %(relative_humidity_pct)s, %(precipitation_mm)s, %(fetched_at_utc)s,
         %(data_type)s, %(source_file)s
     )
-    ON CONFLICT (city, weather_time_local, timezone, fetched_at_utc) DO NOTHING
+    ON CONFLICT (city, weather_time_local, timezone, data_type, fetched_at_utc) DO NOTHING
 """
 
 

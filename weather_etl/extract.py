@@ -1,24 +1,31 @@
-"""Fetch Manila's hourly forecast and save an unmodified JSON snapshot."""
+"""Fetch one requested Manila weather day and preserve its original JSON response."""
 
+import argparse
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
 
+from weather_etl import dates
+
 PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
 
 
-def extract_weather() -> Path:
-    # Query parameters describe the data we want from the API.
+def extract_weather(weather_date: str | date | None = None) -> Path:
+    today = dates.today_in_manila()
+    target = dates.resolve_weather_date(weather_date, today=today)
+    data_type = "historical_forecast" if target < today else "forecast"
+    host = "historical-forecast-api.open-meteo.com" if target < today else "api.open-meteo.com"
     parameters = {
         "latitude": 14.5995,
         "longitude": 120.9842,
         "hourly": "temperature_2m,relative_humidity_2m,precipitation",
         "timezone": "Asia/Manila",
-        "forecast_days": 1,
+        "start_date": target.isoformat(),
+        "end_date": target.isoformat(),
     }
-    url = "https://api.open-meteo.com/v1/forecast"
+    url = f"https://{host}/v1/forecast"
 
     # Requests verifies HTTPS certificates by default. A timeout limits waiting.
     with requests.get(url, params=parameters, timeout=30) as response:
@@ -26,22 +33,21 @@ def extract_weather() -> Path:
         raw_response = response.content
         source_url = response.url
 
-    # Confirm it is JSON before saving it. Keep the original response bytes.
     payload = json.loads(raw_response)
+    dates.validate_requested_day(payload, target)
     fetched_at = datetime.now(timezone.utc)
     snapshot_name = fetched_at.strftime("%Y%m%dT%H%M%S_%fZ")
     output_directory = PROJECT_DIRECTORY / "data" / "raw"
     output_directory.mkdir(parents=True, exist_ok=True)
-    output_path = output_directory / f"manila_forecast_{snapshot_name}.json"
+    output_path = output_directory / f"manila_{data_type}_{target.isoformat()}_{snapshot_name}.json"
 
-    # Exclusive creation protects earlier snapshots from accidental overwrites.
     with output_path.open("xb") as output_file:
         output_file.write(raw_response)
 
-    # Store provenance separately so the provider's response stays unmodified.
     metadata = {
         "city": "Manila",
-        "data_type": "forecast",
+        "weather_date": target.isoformat(),
+        "data_type": data_type,
         "fetched_at_utc": fetched_at.isoformat(),
         "source_url": source_url,
         "raw_file": output_path.name,
@@ -51,14 +57,17 @@ def extract_weather() -> Path:
         json.dump(metadata, metadata_file, indent=2)
         metadata_file.write("\n")
 
-    print(f"Saved {len(payload['hourly']['time'])} hourly forecast records.")
+    print(f"Saved {len(payload['hourly']['time'])} hourly {data_type} records for {target}.")
     print(f"Raw data: {output_path}")
     print(f"Metadata: {metadata_path}")
     return output_path
 
 
 def main():
-    extract_weather()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--date", dest="weather_date", help="Weather day in YYYY-MM-DD; defaults to today in Asia/Manila")
+    args = parser.parse_args()
+    extract_weather(args.weather_date)
 
 
 if __name__ == "__main__":

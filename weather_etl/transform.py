@@ -5,12 +5,17 @@ import csv
 import json
 import math
 from pathlib import Path
+from datetime import date
+
+from weather_etl.dates import validate_requested_day
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
 
 
 def transform(payload, metadata):
     """Validate parallel arrays before combining their matching positions."""
+    if metadata.get("weather_date") is not None:
+        validate_requested_day(payload, date.fromisoformat(metadata["weather_date"]))
     expected_units = {
         "time": "iso8601", "temperature_2m": "°C",
         "relative_humidity_2m": "%", "precipitation": "mm",
