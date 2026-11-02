@@ -1,11 +1,13 @@
-"""Collect, validate, and load a Manila weather forecast daily at 6 AM."""
+"""Collect Manila, Cebu, and Davao weather forecasts daily at 6 AM."""
 
 from datetime import timedelta
 
 import pendulum
 
-from airflow.sdk import Param, dag, task
+from airflow.sdk import Param, dag, task, task_group
 from airflow.timetables.trigger import CronTriggerTimetable
+
+from weather_etl.cities import CITIES
 
 
 @dag(
@@ -21,11 +23,11 @@ from airflow.timetables.trigger import CronTriggerTimetable
 )
 def weather_pipeline():
     @task
-    def extract() -> str:
-        from weather_etl.extract import extract_weather
-
+    def extract(city: str) -> str:
         from airflow.sdk import get_current_context
+
         from weather_etl.dates import weather_date_for_run
+        from weather_etl.extract import extract_weather
 
         context = get_current_context()
         target = weather_date_for_run(
@@ -33,7 +35,7 @@ def weather_pipeline():
             context.get("logical_date"),
             context["dag_run"].run_after,
         )
-        return str(extract_weather(target))
+        return str(extract_weather(target, city=city))
 
     @task
     def transform(raw_file: str) -> str:
@@ -47,10 +49,15 @@ def weather_pipeline():
 
         return load_file(csv_file)
 
-    # TaskFlow passes each result to its dependent task through a small XCom.
-    raw_file = extract()
-    csv_file = transform(raw_file)
-    load(csv_file)
+    @task_group(group_id="city")
+    def city_pipeline(city_key: str):
+        """Collect one city independently using the shared ETL functions."""
+        raw_file = extract(city_key)
+        csv_file = transform(raw_file)
+        load(csv_file)
+
+    for city_key, location in CITIES.items():
+        city_pipeline.override(group_id=city_key, tooltip=location.name)(city_key)
 
 
 weather_etl_dag = weather_pipeline()
