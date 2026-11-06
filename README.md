@@ -132,6 +132,46 @@ Get-Content sql/analytics.sql -Raw | docker compose exec -T weather-db sh -c 'ex
 The command can be reapplied. These are ordinary views: later ETL loads appear
 when queried, without a separate Airflow refresh task.
 
+## AWS deployment plan
+
+**Status:** Planned. The local setup above is the current way to run the project.
+
+The first cloud demo will run the existing Docker Compose stack on one Linux EC2
+instance. Airflow will still collect forecasts for Manila, Cebu, and Davao at
+6:00 AM Asia/Manila. PostgreSQL will still serve the analytics, and a private S3
+bucket will archive the original forecast responses and their metadata.
+
+1. **Add an optional S3 archive task.** After extraction, upload each raw JSON
+   file and its matching metadata to `raw/<city>/<data_type>/<weather_date>/`
+   using the existing filenames. Keep upload retries separate from extraction.
+   A retry should reuse both object keys, even if only one file uploaded on the
+   first attempt. A fresh fetch should retain its own snapshot. Keep local runs
+   usable without AWS configuration.
+2. **Prepare the AWS resources.** Estimate the cost of EC2, its EBS disk, public
+   IPv4, and S3 for the demo window. Size the instance for Airflow and both
+   PostgreSQL containers. Create a bucket in the same region with S3 Block Public
+   Access enabled and attach an EC2 IAM role that can write only under the
+   archive prefix. Require IMDSv2 and verify that the Airflow container can use
+   the role's temporary credentials.
+3. **Deploy the Compose stack.** Clone this repo onto EC2, configure the
+   deployment secrets on the instance, and start the services. Restrict SSH
+   access to the deployer's IP, keep Airflow and PostgreSQL bound to localhost,
+   and view Airflow through an SSH tunnel.
+4. **Verify and document one scheduled run.** Check that the 6:00 AM Manila run
+   succeeds for all three cities, loads the forecasts into PostgreSQL, and
+   produces three JSON and metadata pairs in S3. Retry one archive task and
+   verify that it reuses the same keys. Record the deployed commit, the run
+   result, and sanitized S3 evidence so the demo can be reviewed after teardown.
+5. **Tear down the demo.** Terminate the instance, check for remaining EBS
+   volumes and allocated public IPs, and remove the demo bucket and IAM
+   resources once the evidence has been saved.
+
+AWS references: [Pricing Calculator](https://calculator.aws/),
+[EC2 IAM roles](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html),
+[instance metadata settings](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-options.html),
+[S3 Block Public Access](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html),
+and [EC2 termination](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/terminating-instances.html).
+
 ## Data model
 
 | Object | One row represents |
