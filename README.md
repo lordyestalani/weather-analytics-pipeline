@@ -132,35 +132,101 @@ Get-Content sql/analytics.sql -Raw | docker compose exec -T weather-db sh -c 'ex
 The command can be reapplied. These are ordinary views: later ETL loads appear
 when queried, without a separate Airflow refresh task.
 
-## AWS deployment plan
+## AWS deployment
 
-**Status:** Planned. The local setup above is the current way to run the project.
+The existing Docker Compose stack ran on one Ubuntu 24.04 EC2 instance in
+Sydney. Airflow and both PostgreSQL services ran on EC2, and the Airflow UI was
+accessed through an SSH tunnel. The manual DAG run succeeded on November 6,
+2026. Verification of the 6:00 AM Manila run with the local PC off is pending.
 
-The first milestone is to run the existing Docker Compose stack on one Linux
-EC2 instance and see Airflow collect forecasts at 6:00 AM Asia/Manila while the
-local PC is off. Airflow and both PostgreSQL services run on EC2. Power BI
-Desktop can be closed during collection.
+### Why EC2 for this demo?
 
-1. **Set up AWS and estimate the demo cost.** Check the account's available
-   credits and price an EC2 instance, EBS disk, and public IPv4 address for a
-   window that includes the next scheduled run. Size the instance for Airflow
-   and both PostgreSQL containers.
-2. **Deploy the existing stack.** Install Docker and Compose on the instance,
-   clone the repo, and create the `.env` file on EC2. Check that Airflow can
-   write to the shared `data/` directory on Linux. Start Compose in detached
-   mode so the services keep running after SSH disconnects. Restrict SSH access
-   to the deployer's IP, keep Airflow and PostgreSQL bound to localhost, and
-   view Airflow through an SSH tunnel.
-3. **Prove that scheduling works without the local PC.** Run the DAG manually
-   once as a smoke test. Leave EC2 and its containers running, close SSH, and
-   turn off the PC before 6:00 AM Manila time. Reconnect after the scheduled
-   run and verify that Airflow triggered it automatically and that PostgreSQL
-   received forecasts for Manila, Cebu, and Davao. Save the deployed commit,
-   run timestamp, and database row counts for the demo.
-4. **Wrap up the demo.** Export any results you want to keep, terminate the
-   instance, and check for remaining EBS volumes and allocated public IPs. For
-   ongoing daily collection, plan for recurring EC2 costs and verify that the
-   Compose services come back after an instance reboot.
+This is a learning project with one daily job. The goal was to run the existing
+pipeline independently of the local PC. One EC2 instance let us reuse
+`compose.yaml`, keep Airflow and PostgreSQL on the same host, and practice
+setting up a Linux server, connecting over SSH, and checking container health.
+
+Amazon ECS would add task definitions and choices about networking and persistent
+storage. For a short demo, managing one instance kept the setup small. The
+tradeoff is that we manage the host and the pipeline depends on that one machine.
+[ECS task definitions](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definitions.html)
+and [ECS storage options](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/using_data_volumes.html)
+describe the additional configuration.
+
+### Start the stack on EC2
+
+Use an Ubuntu 24.04 x86-64 instance sized for Airflow and both PostgreSQL
+containers. Check the account plan, available credits, and estimated cost of
+EC2, its EBS disk, and public IPv4 for the demo window. Allow inbound SSH from
+your IP and keep the Airflow and PostgreSQL ports bound to localhost.
+
+Connect to EC2 over SSH and prepare the project in the Ubuntu terminal.
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
+sudo systemctl enable --now docker
+git clone https://github.com/lordyestalani/weather-analytics-pipeline.git
+cd weather-analytics-pipeline
+sudo install -d -o 50000 -g 0 -m 0770 data
+(umask 077; cp -n .env.example .env)
+```
+
+The shared `data/` directory gives the Airflow container write access to its
+forecast files. Edit `.env` on EC2 and fill in the five secrets from
+[Prepare the environment](#1-prepare-the-environment). Use `python3` in Ubuntu
+for the key generation commands and generate fresh passwords for this deployment.
+
+```bash
+sudo docker compose build airflow-api-server &&
+sudo docker compose up -d --wait --wait-timeout 180 \
+  airflow-api-server airflow-scheduler airflow-dag-processor weather-db
+sudo docker compose ps -a
+```
+
+Compose runs in detached mode, so the services stay up after SSH disconnects.
+The five long-running services should be healthy and `airflow-init` should
+show `Exited (0)`.
+
+### Trigger and verify the manual DAG run
+
+Trigger `weather_etl` from the repo directory on EC2.
+
+```bash
+sudo docker compose exec airflow-scheduler airflow dags trigger weather_etl
+```
+
+![EC2 terminal showing healthy Compose services and the queued manual Airflow run](docs/images/ec2-compose-manual-trigger.png)
+
+The terminal output shows the manual run was queued. To see the result, open
+an SSH tunnel from a separate terminal on your PC, using your key path and EC2
+hostname.
+
+```text
+ssh -N -L 127.0.0.1:8080:127.0.0.1:8080 -i "path-to-key.pem" ubuntu@EC2_PUBLIC_DNS
+```
+
+With the tunnel open, visit [Airflow](http://localhost:8080), sign in as `admin`
+using `AIRFLOW_ADMIN_PASSWORD` from the EC2 `.env`, and open **Dag Runs**.
+If your local Weather ETL stack is using port `8080`, stop that stack before
+opening the tunnel.
+
+![Airflow DAG list showing the successful manual run and next 6 AM Manila run](docs/images/ec2-airflow-manual-success.png)
+
+Airflow recorded **Success** for the November 6, 2026 manual run at 11:06 PM
+Manila time. All nine extract, transform, and load tasks succeeded across
+Manila, Cebu, and Davao.
+
+### Verify the scheduled run and clean up
+
+Leave EC2 and its containers running and keep `weather_etl` unpaused. Turn off
+the local PC before 6:00 AM Manila time. After reconnecting, confirm a new
+**Scheduled** run succeeded and check its actual start time. Record the deployed
+commit, run timestamp, and PostgreSQL row counts by city for the weather date.
+
+After the demo, export the results you want to keep, terminate the instance,
+and check for remaining EBS volumes and allocated public IPs. For ongoing
+collection, account for recurring EC2 costs and verify that the Compose
+services come back after an instance reboot.
 
 **Optional follow-up:** Add a separate Airflow task to copy the raw JSON and
 metadata to private S3. Use an EC2 IAM role scoped to the archive prefix and keep
