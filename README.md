@@ -136,9 +136,8 @@ when queried, without a separate Airflow refresh task.
 
 The existing Docker Compose stack ran on one Ubuntu 24.04 EC2 instance in
 Sydney. Airflow and both PostgreSQL services ran on EC2, and the Airflow UI was
-accessed through an SSH tunnel. The manual DAG run succeeded on November 6,
-2026. We temporarily set the EC2 demo schedule to 23:30 Manila time that day
-to test a run with the local PC off. Verification of that run is pending.
+accessed through an SSH tunnel. On November 6, 2026, both the manual DAG run
+and the automatic run at 23:30 Manila time succeeded on EC2.
 
 ### Why EC2 for this demo?
 
@@ -227,15 +226,21 @@ Airflow recorded **Success** for the November 6, 2026 manual run at 11:06 PM
 Manila time. All nine extract, transform, and load tasks succeeded across
 Manila, Cebu, and Davao.
 
-### Verify the scheduled run and clean up
+### Scheduled run and cleanup
 
 For the demo, we set the cron expression to `30 23 * * *` in the EC2 copy of
 `dags/weather_etl_dag.py` and checked that Airflow showed **Next Run** at 23:30
-Manila time. Leave EC2 and its containers running, keep `weather_etl` unpaused,
-and turn off the local PC before that time. After reconnecting, confirm a new
-**Scheduled** run succeeded and check its actual start time. Record the deployed
-commit, run timestamp, and PostgreSQL row counts by city for the weather date.
-Restore `0 6 * * *` on EC2 after the test to resume the usual 06:00 schedule.
+Manila time. Airflow then recorded a **Scheduled** run with an actual start time
+of **23:30:00 on November 6, 2026**. It finished successfully in **10.785 seconds**,
+with successful task groups for Cebu, Davao, and Manila.
+
+![Airflow run history showing the 23:30 Manila scheduled run and the earlier manual run, both successful](docs/images/ec2-airflow-scheduled-success.png)
+
+To repeat the test with the local PC off, leave EC2 and its containers running
+and keep `weather_etl` unpaused. Reconnect after the scheduled time and check
+the run type, state, and actual start time. Record the deployed commit and
+PostgreSQL row counts by city for the weather date. Restore `0 6 * * *` on EC2
+after the test to resume the usual 06:00 schedule.
 
 After the demo, export the results you want to keep, terminate the instance,
 and check for remaining EBS volumes and allocated public IPs. For ongoing
