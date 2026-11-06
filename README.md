@@ -137,7 +137,8 @@ when queried, without a separate Airflow refresh task.
 The existing Docker Compose stack ran on one Ubuntu 24.04 EC2 instance in
 Sydney. Airflow and both PostgreSQL services ran on EC2, and the Airflow UI was
 accessed through an SSH tunnel. The manual DAG run succeeded on November 6,
-2026. Verification of the 6:00 AM Manila run with the local PC off is pending.
+2026. We temporarily set the EC2 demo schedule to 23:30 Manila time that day
+to test a run with the local PC off. Verification of that run is pending.
 
 ### Why EC2 for this demo?
 
@@ -187,6 +188,26 @@ Compose runs in detached mode, so the services stay up after SSH disconnects.
 The five long-running services should be healthy and `airflow-init` should
 show `Exited (0)`.
 
+### View Airflow through an SSH tunnel
+
+We used SSH local port forwarding to view the Airflow UI on EC2. Run this in
+a separate terminal on your PC with your key path and EC2 hostname.
+
+```text
+ssh -N -L 8080:127.0.0.1:8080 -i "path-to-key.pem" ubuntu@EC2_PUBLIC_DNS
+```
+
+`-N` opens the tunnel without starting a remote shell. `-L` forwards port
+`8080` on your PC to `127.0.0.1:8080` on EC2, where Airflow listens. Keep that
+terminal open while you use the UI. If the local Weather ETL stack is using
+port `8080`, stop it before opening the tunnel.
+
+Open [Airflow](http://localhost:8080) and sign in as `admin` using
+`AIRFLOW_ADMIN_PASSWORD` from the EC2 `.env`. On **Dags**, open `weather_etl`
+to see its schedule and **Next Run** time. In **Dag Runs**, check **Run Type**,
+**State**, and **Start Date** to verify when a scheduled run actually started
+and whether it succeeded.
+
 ### Trigger and verify the manual DAG run
 
 Trigger `weather_etl` from the repo directory on EC2.
@@ -197,20 +218,10 @@ sudo docker compose exec airflow-scheduler airflow dags trigger weather_etl
 
 ![EC2 terminal showing healthy Compose services and the queued manual Airflow run](docs/images/ec2-compose-manual-trigger.png)
 
-The terminal output shows the manual run was queued. To see the result, open
-an SSH tunnel from a separate terminal on your PC, using your key path and EC2
-hostname.
+The terminal output shows the manual run was queued. In **Dag Runs**, look
+for a **Manual** run and check its final state.
 
-```text
-ssh -N -L 127.0.0.1:8080:127.0.0.1:8080 -i "path-to-key.pem" ubuntu@EC2_PUBLIC_DNS
-```
-
-With the tunnel open, visit [Airflow](http://localhost:8080), sign in as `admin`
-using `AIRFLOW_ADMIN_PASSWORD` from the EC2 `.env`, and open **Dag Runs**.
-If your local Weather ETL stack is using port `8080`, stop that stack before
-opening the tunnel.
-
-![Airflow DAG list showing the successful manual run and next 6 AM Manila run](docs/images/ec2-airflow-manual-success.png)
+![Airflow DAG list showing the successful manual run and the next run at 23:30 Manila time](docs/images/ec2-airflow-manual-success.png)
 
 Airflow recorded **Success** for the November 6, 2026 manual run at 11:06 PM
 Manila time. All nine extract, transform, and load tasks succeeded across
@@ -218,10 +229,13 @@ Manila, Cebu, and Davao.
 
 ### Verify the scheduled run and clean up
 
-Leave EC2 and its containers running and keep `weather_etl` unpaused. Turn off
-the local PC before 6:00 AM Manila time. After reconnecting, confirm a new
+For the demo, we set the cron expression to `30 23 * * *` in the EC2 copy of
+`dags/weather_etl_dag.py` and checked that Airflow showed **Next Run** at 23:30
+Manila time. Leave EC2 and its containers running, keep `weather_etl` unpaused,
+and turn off the local PC before that time. After reconnecting, confirm a new
 **Scheduled** run succeeded and check its actual start time. Record the deployed
 commit, run timestamp, and PostgreSQL row counts by city for the weather date.
+Restore `0 6 * * *` on EC2 after the test to resume the usual 06:00 schedule.
 
 After the demo, export the results you want to keep, terminate the instance,
 and check for remaining EBS volumes and allocated public IPs. For ongoing
