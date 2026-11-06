@@ -132,6 +132,130 @@ Get-Content sql/analytics.sql -Raw | docker compose exec -T weather-db sh -c 'ex
 The command can be reapplied. These are ordinary views: later ETL loads appear
 when queried, without a separate Airflow refresh task.
 
+## AWS deployment
+
+The existing Docker Compose stack ran on one Ubuntu 24.04 EC2 instance in
+Sydney. Airflow and both PostgreSQL services ran on EC2, and the Airflow UI was
+accessed through an SSH tunnel. On November 6, 2026, both the manual DAG run
+and the automatic run at 23:30 Manila time succeeded on EC2.
+
+### Why EC2 for this demo?
+
+This is a learning project with one daily job. The goal was to run the existing
+pipeline independently of the local PC. One EC2 instance let us reuse
+`compose.yaml`, keep Airflow and PostgreSQL on the same host, and practice
+setting up a Linux server, connecting over SSH, and checking container health.
+
+Amazon ECS would add task definitions and choices about networking and persistent
+storage. For a short demo, managing one instance kept the setup small. The
+tradeoff is that we manage the host and the pipeline depends on that one machine.
+[ECS task definitions](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definitions.html)
+and [ECS storage options](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/using_data_volumes.html)
+describe the additional configuration.
+
+### Start the stack on EC2
+
+Use an Ubuntu 24.04 x86-64 instance sized for Airflow and both PostgreSQL
+containers. Check the account plan, available credits, and estimated cost of
+EC2, its EBS disk, and public IPv4 for the demo window. Allow inbound SSH from
+your IP and keep the Airflow and PostgreSQL ports bound to localhost.
+
+Connect to EC2 over SSH and prepare the project in the Ubuntu terminal.
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
+sudo systemctl enable --now docker
+git clone https://github.com/lordyestalani/weather-analytics-pipeline.git
+cd weather-analytics-pipeline
+sudo install -d -o 50000 -g 0 -m 0770 data
+(umask 077; cp -n .env.example .env)
+```
+
+The shared `data/` directory gives the Airflow container write access to its
+forecast files. Edit `.env` on EC2 and fill in the five secrets from
+[Prepare the environment](#1-prepare-the-environment). Use `python3` in Ubuntu
+for the key generation commands and generate fresh passwords for this deployment.
+
+```bash
+sudo docker compose build airflow-api-server &&
+sudo docker compose up -d --wait --wait-timeout 180 \
+  airflow-api-server airflow-scheduler airflow-dag-processor weather-db
+sudo docker compose ps -a
+```
+
+Compose runs in detached mode, so the services stay up after SSH disconnects.
+The five long-running services should be healthy and `airflow-init` should
+show `Exited (0)`.
+
+### View Airflow through an SSH tunnel
+
+We used SSH local port forwarding to view the Airflow UI on EC2. Run this in
+a separate terminal on your PC with your key path and EC2 hostname.
+
+```text
+ssh -N -L 8080:127.0.0.1:8080 -i "path-to-key.pem" ubuntu@EC2_PUBLIC_DNS
+```
+
+`-N` opens the tunnel without starting a remote shell. `-L` forwards port
+`8080` on your PC to `127.0.0.1:8080` on EC2, where Airflow listens. Keep that
+terminal open while you use the UI. If the local Weather ETL stack is using
+port `8080`, stop it before opening the tunnel.
+
+Open [Airflow](http://localhost:8080) and sign in as `admin` using
+`AIRFLOW_ADMIN_PASSWORD` from the EC2 `.env`. On **Dags**, open `weather_etl`
+to see its schedule and **Next Run** time. In **Dag Runs**, check **Run Type**,
+**State**, and **Start Date** to verify when a scheduled run actually started
+and whether it succeeded.
+
+### Trigger and verify the manual DAG run
+
+Trigger `weather_etl` from the repo directory on EC2.
+
+```bash
+sudo docker compose exec airflow-scheduler airflow dags trigger weather_etl
+```
+
+![EC2 terminal showing healthy Compose services and the queued manual Airflow run](docs/images/ec2-compose-manual-trigger.png)
+
+The terminal output shows the manual run was queued. In **Dag Runs**, look
+for a **Manual** run and check its final state.
+
+![Airflow DAG list showing the successful manual run and the next run at 23:30 Manila time](docs/images/ec2-airflow-manual-success.png)
+
+Airflow recorded **Success** for the November 6, 2026 manual run at 11:06 PM
+Manila time. All nine extract, transform, and load tasks succeeded across
+Manila, Cebu, and Davao.
+
+### Scheduled run and cleanup
+
+For the demo, we set the cron expression to `30 23 * * *` in the EC2 copy of
+`dags/weather_etl_dag.py` and checked that Airflow showed **Next Run** at 23:30
+Manila time. Airflow then recorded a **Scheduled** run with an actual start time
+of **23:30:00 on November 6, 2026**. It finished successfully in **10.785 seconds**,
+with successful task groups for Cebu, Davao, and Manila.
+
+![Airflow run history showing the 23:30 Manila scheduled run and the earlier manual run, both successful](docs/images/ec2-airflow-scheduled-success.png)
+
+To repeat the test with the local PC off, leave EC2 and its containers running
+and keep `weather_etl` unpaused. Reconnect after the scheduled time and check
+the run type, state, and actual start time. Record the deployed commit and
+PostgreSQL row counts by city for the weather date. Restore `0 6 * * *` on EC2
+after the test to resume the usual 06:00 schedule.
+
+After the demo, export the results you want to keep, terminate the instance,
+and check for remaining EBS volumes and allocated public IPs. For ongoing
+collection, account for recurring EC2 costs and verify that the Compose
+services come back after an instance reboot.
+
+**Optional follow-up:** Add a separate Airflow task to copy the raw JSON and
+metadata to private S3. Use an EC2 IAM role scoped to the archive prefix and keep
+the same object keys on upload retries.
+
+AWS references: [Pricing Calculator](https://calculator.aws/),
+[EC2 instance states and billing](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-lifecycle.html),
+[EC2 IAM roles](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html),
+and [EC2 termination](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/terminating-instances.html).
+
 ## Data model
 
 | Object | One row represents |
